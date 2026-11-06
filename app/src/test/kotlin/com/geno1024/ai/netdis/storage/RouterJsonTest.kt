@@ -4,6 +4,7 @@ import com.geno1024.ai.netdis.model.RouterConfig
 import com.geno1024.ai.netdis.model.RouterType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -92,5 +93,34 @@ class RouterJsonTest {
             vault::seal,
         )
         assertEquals("", RouterJson.decode(text, vault::unseal).single().password)
+    }
+
+    @Test
+    fun `round-trips and normalizes the router MAC`() {
+        val text = RouterJson.encode(
+            listOf(
+                RouterConfig(
+                    id = "zte",
+                    label = "二楼",
+                    host = "192.168.2.1",
+                    type = RouterType.ZTE,
+                    mac = "D4B7099307D2",
+                ),
+            ),
+            vault::seal,
+        )
+        val decoded = RouterJson.decode(text, vault::unseal).single()
+        assertEquals("d4:b7:09:93:07:d2", decoded.mac)
+        assertEquals(RouterType.ZTE, decoded.type)
+    }
+
+    @Test
+    fun `a blank or malformed MAC decodes as absent`() {
+        val decoded = RouterJson.decode(
+            """[{"id":"a","host":"10.0.0.1","mac":""},{"id":"b","host":"10.0.0.2","mac":"nope"}]""",
+            vault::unseal,
+        )
+        assertNull(decoded[0].mac)
+        assertNull(decoded[1].mac)
     }
 }

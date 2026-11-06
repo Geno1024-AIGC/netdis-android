@@ -141,6 +141,7 @@ object SnapshotJson {
         put("parentId", snapshot.parentId)
         put("externalIp", snapshot.externalIp)
         put("fingerprint", snapshot.fingerprint)
+        put("mac", snapshot.mac)
     }
 
     private fun routerFrom(json: JSONObject): RouterSnapshot? {
@@ -164,6 +165,8 @@ object SnapshotJson {
             parentId = json.optString("parentId").takeIf { it.isNotBlank() },
             externalIp = json.optString("externalIp").takeIf { it.isNotBlank() },
             fingerprint = json.optString("fingerprint").takeIf { it.isNotBlank() },
+            mac = json.optString("mac").takeIf { it.isNotBlank() }
+                ?.let(com.geno1024.ai.netdis.net.ArpTable::normalizeMac),
         )
     }
 

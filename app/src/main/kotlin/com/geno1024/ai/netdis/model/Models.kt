@@ -114,6 +114,12 @@ data class RouterConfig(
     val password: String = "",
     val enabled: Boolean = true,
     val note: String = "",
+    /**
+     * Stable identity of the router's LAN interface. The address changes when a
+     * router is moved or gets a new DHCP lease; the MAC does not, so saved
+     * credentials are matched by MAC first and by address as a fallback.
+     */
+    val mac: String? = null,
 ) {
     val displayHost: String
         get() = if (port > 0) "$host:$port" else host
@@ -144,8 +150,27 @@ data class RouterSnapshot(
     val parentId: String? = null,
     val externalIp: String? = null,
     val fingerprint: String? = null,
+    /** LAN MAC learned during login, used to keep credentials attached to the router. */
+    val mac: String? = null,
 ) {
     val clientCount: Int get() = clients.size
+}
+
+/** Live state of a full 1–65535 TCP scan. Shared by the UI and the notification. */
+data class PortScanState(
+    val id: Long,
+    val ip: String,
+    val label: String = "",
+    val running: Boolean = true,
+    val scanned: Int = 0,
+    val total: Int = 65535,
+    val openPorts: List<Int> = emptyList(),
+    val finished: Boolean = false,
+    val cancelled: Boolean = false,
+    val message: String? = null,
+) {
+    val fraction: Float
+        get() = if (total <= 0) 0f else (scanned.toFloat() / total).coerceIn(0f, 1f)
 }
 
 data class TopologyNode(
@@ -200,8 +225,6 @@ data class AppSettings(
     val updateMirrorPrefix: String = "",
     /** Modern Android blocks the neighbour table; a rooted phone can still read it. */
     val readArpWithRoot: Boolean = false,
-    /** Record app↔router HTTP exchanges so a new firmware can be adapted. */
-    val captureTraffic: Boolean = false,
 )
 
 enum class ScanStage(val label: String) {

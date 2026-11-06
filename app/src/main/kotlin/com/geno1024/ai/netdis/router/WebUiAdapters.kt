@@ -128,41 +128,6 @@ object XiaomiAdapter : WebUiBrand() {
     )
 }
 
-/**
- * Huawei home gateways mix a base64 form login with newer JSON endpoints. The
- * client pages are still plain HTML tables on most HG/WS firmware.
- */
-object HuaweiAdapter : WebUiBrand() {
-    override val type: RouterType = RouterType.HUAWEI
-    override val profile = WebUiProfile(
-        type = type,
-        brand = "华为 Huawei",
-        landingPaths = listOf("/", "/html/ssmp/common/login.asp", "/html/index.asp"),
-        tokenPaths = listOf("/asp/GetRandCount.asp"),
-        loginSteps = listOf(
-            webForm("/login.cgi", "Username={userB64}&Password={passB64}"),
-            webForm("/login.cgi", "username={userB64}&password={passB64}"),
-            webJson(
-                "/api/system/user_login",
-                """{"username":"{user}","password":"{pass}"}""",
-            ),
-            webForm("/html/ssmp/common/login.asp", "Username={userB64}&Password={passB64}"),
-        ),
-        clientRequests = listOf(
-            webGet("/html/ssmp/dhcp/dhcphosts.asp"),
-            webGet("/html/ssmp/wlan/wlanclients.asp"),
-            webGet("/html/status/landevice.asp"),
-            webGet("/html/ssmp/landevice/landevice.asp"),
-            webGet("/api/system/deviceinfo"),
-        ),
-        statusRequests = listOf(
-            webGet("/html/ssmp/deviceinfo/deviceinfo.asp"),
-            webGet("/html/status/status.asp"),
-            webGet("/api/system/deviceinfo"),
-        ),
-    )
-}
-
 /** Tenda's goform endpoints return JSON, which the shared walker reads directly. */
 object TendaAdapter : WebUiBrand() {
     override val type: RouterType = RouterType.TENDA

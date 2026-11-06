@@ -10,6 +10,7 @@ import com.geno1024.ai.netdis.model.RouterSnapshot
 import com.geno1024.ai.netdis.model.TopologyEdge
 import com.geno1024.ai.netdis.model.TopologyGraph
 import com.geno1024.ai.netdis.model.TopologyNode
+import com.geno1024.ai.netdis.net.ArpTable
 import com.geno1024.ai.netdis.net.Subnet
 
 /**
@@ -69,6 +70,11 @@ object TopologyBuilder {
         val depthOf = resolveDepths(parentOf)
         val configOf: (RouterSnapshot) -> RouterConfig? = { snapshot ->
             snapshot.configId?.let(configById::get)
+                ?: snapshot.mac?.let { mac ->
+                    val wanted = ArpTable.normalizeMac(mac)
+                    configs.firstOrNull { ArpTable.normalizeMac(it.mac) == wanted }
+                }
+                ?: configs.firstOrNull { it.host == snapshot.host }
         }
 
         val routerNodes = visible.map { (id, snapshot) ->

@@ -67,6 +67,7 @@ class SnapshotJsonTest {
         ),
         wirelessCount = 3,
         fingerprint = "Xiaomi AX3000 · OpenWrt 24.10",
+        mac = "e8:68:19:11:b4:cc",
     )
 
     private fun snapshot() = ScanSnapshot(
@@ -89,6 +90,7 @@ class SnapshotJsonTest {
         assertEquals(local, decoded.local)
         assertEquals(listOf(phone), decoded.hosts)
         assertEquals(listOf(router), decoded.routers)
+        assertEquals("e8:68:19:11:b4:cc", decoded.routers.single().mac)
         assertEquals(listOf("未配置路由器账号"), decoded.warnings)
 
         // The graph is derived, not stored, but must come back complete.

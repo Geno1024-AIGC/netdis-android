@@ -298,8 +298,19 @@ class DeviceScanner(private val context: Context) {
         coroutineContext.ensureActive()
 
         report(ScanStage.ROUTERS, 0.82f, "读取路由器")
-        val normalizedConfigs = routers.map(RouterScanner::normalize)
         val gateway = local.gateway
+        // A saved router can reappear on a different address. If its MAC was
+        // learned earlier, follow the MAC and scan the current address while
+        // keeping the same credentials.
+        val normalizedConfigs = routers.map(RouterScanner::normalize).map { config ->
+            val savedMac = ArpTable.normalizeMac(config.mac)
+            val moved = savedMac?.let { wanted ->
+                live.values.firstOrNull {
+                    ArpTable.normalizeMac(it.mac) == wanted
+                }
+            }
+            if (moved != null && moved.ip != config.host) config.copy(host = moved.ip) else config
+        }
         val gatewayConfigured = gateway != null && normalizedConfigs.any {
             it.enabled && it.host == gateway
         }
@@ -374,7 +385,7 @@ class DeviceScanner(private val context: Context) {
             local = local,
             hosts = live.values.toList(),
             routers = routerSnapshots,
-            configs = routers,
+            configs = normalizedConfigs,
         )
 
         report(ScanStage.DONE, 1f, "发现 ${live.size} 个节点")

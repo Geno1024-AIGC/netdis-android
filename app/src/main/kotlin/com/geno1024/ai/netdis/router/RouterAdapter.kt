@@ -19,6 +19,8 @@ data class RouterScanOutcome(
     val clients: List<HostRecord> = emptyList(),
     val wirelessCount: Int = 0,
     val fingerprint: String? = null,
+    /** The router's own LAN MAC, when the adapter can read it. */
+    val mac: String? = null,
 )
 
 interface RouterAdapter {

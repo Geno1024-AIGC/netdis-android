@@ -115,4 +115,106 @@ class ZteParsingTest {
         val rows = ZteParsing.tableRows("<tr><td>  <b>客厅</b>&nbsp;电视 &amp; 盒子 </td></tr>")
         assertEquals(listOf("客厅 电视 & 盒子"), rows.single())
     }
+
+    @Test
+    fun `reads the E1600 login token and salt`() {
+        val html = """
+            <script>
+              LoginFormObj.addParameter("_sessionTOKEN", "397667032103403366315799");
+              var SHA256Password = sha256(Password + xmlObj);
+            </script>
+        """.trimIndent()
+        assertEquals("397667032103403366315799", ZteParsing.extractLoginToken(html))
+
+        val salt = ZteParsing.extractSalt(
+            """<ajax_response_xml_root>63178618</ajax_response_xml_root>""",
+        )
+        assertEquals("63178618", salt)
+        assertEquals("", ZteParsing.extractSalt("<html></html>"))
+    }
+
+    @Test
+    fun `parses ParaName and ParaValue instances`() {
+        val xml = """
+            <ajax_response_xml_root>
+              <OBJ_LAN_ACCESS_ID>
+                <Instance>
+                  <ParaName>IPAddress</ParaName><ParaValue>192.168.2.36</ParaValue>
+                  <ParaName>MACAddress</ParaName><ParaValue>F0:13:C1:28:98:1A</ParaValue>
+                  <ParaName>HostName</ParaName><ParaValue>printer</ParaValue>
+                  <ParaName>Band</ParaName><ParaValue>5G</ParaValue>
+                  <ParaName>Interface</ParaName><ParaValue>5G</ParaValue>
+                  <ParaName>Active</ParaName><ParaValue>1</ParaValue>
+                </Instance>
+                <Instance>
+                  <ParaName>IPAddress</ParaName><ParaValue>192.168.2.3</ParaValue>
+                  <ParaName>MACAddress</ParaName><ParaValue>AA-BB-CC-DD-EE-03</ParaValue>
+                  <ParaName>HostName</ParaName><ParaValue>speaker</ParaValue>
+                  <ParaName>Interface</ParaName><ParaValue>LAN</ParaValue>
+                  <ParaName>Active</ParaName><ParaValue>0</ParaValue>
+                </Instance>
+              </OBJ_LAN_ACCESS_ID>
+            </ajax_response_xml_root>
+        """.trimIndent()
+
+        val instances = ZteParsing.parseInstances(xml)
+        assertEquals(2, instances.size)
+        assertEquals("192.168.2.36", instances[0]["IPAddress"])
+        assertEquals("F0:13:C1:28:98:1A", instances[0]["MACAddress"])
+
+        val clients = ZteParsing.parseAccessDevices(xml, routerId = "zte")
+        assertEquals(2, clients.size)
+
+        val printer = clients[0]
+        assertEquals("192.168.2.36", printer.ip)
+        assertEquals("f0:13:c1:28:98:1a", printer.mac)
+        assertEquals("printer", printer.hostname)
+        assertEquals(LinkKind.WIFI, printer.link)
+        assertTrue(printer.online)
+        assertEquals("5G", printer.extra["band"])
+        assertEquals("zte", printer.routerId)
+
+        val speaker = clients[1]
+        assertEquals(LinkKind.ETHERNET, speaker.link)
+        assertFalse(speaker.online)
+    }
+
+    @Test
+    fun `reads E1600 status from ParaName instances`() {
+        val xml = """
+            <ajax_response_xml_root>
+              <Instance>
+                <ParaName>ModelName</ParaName><ParaValue>ZXHN E1600</ParaValue>
+                <ParaName>SoftwareVer</ParaName><ParaValue>V1.0.0.1B9.1000</ParaValue>
+                <ParaName>HardwareVer</ParaName><ParaValue>V1.0.0</ParaValue>
+                <ParaName>UpTime</ParaName><ParaValue>3458615</ParaValue>
+                <ParaName>ManuFacturer</ParaName><ParaValue>ZTE</ParaValue>
+              </Instance>
+              <Instance>
+                <ParaName>BrIPAddr</ParaName><ParaValue>192.168.2.1</ParaValue>
+                <ParaName>SubMask</ParaName><ParaValue>255.255.255.0</ParaValue>
+              </Instance>
+              <Instance>
+                <ParaName>IPAddress</ParaName><ParaValue>192.168.1.7</ParaValue>
+                <ParaName>GateWay</ParaName><ParaValue>192.168.1.1</ParaValue>
+                <ParaName>DNS1</ParaName><ParaValue>192.168.1.1</ParaValue>
+                <ParaName>WorkIFMac</ParaName><ParaValue>d4:b7:09:93:07:d2</ParaValue>
+              </Instance>
+            </ajax_response_xml_root>
+        """.trimIndent()
+
+        val instances = ZteParsing.parseInstances(xml)
+        val model = instances.firstNotNullOfOrNull { it["ModelName"] }
+        val firmware = instances.firstNotNullOfOrNull { it["SoftwareVer"] }
+        val uptime = instances.firstNotNullOfOrNull { it["UpTime"] }
+        assertEquals("ZXHN E1600", model)
+        assertEquals("V1.0.0.1B9.1000", firmware)
+        assertEquals(3458615L, uptime?.toLong())
+
+        val lan = instances.firstNotNullOfOrNull { it["BrIPAddr"] }
+        val mask = instances.firstNotNullOfOrNull { it["SubMask"] }
+        assertEquals("192.168.2.0/24", RouterParsing.cidrFrom(lan.orEmpty(), mask))
+        assertEquals("192.168.1.7", instances.firstNotNullOfOrNull { it["IPAddress"] })
+        assertEquals("192.168.1.1", instances.firstNotNullOfOrNull { it["GateWay"] })
+    }
 }

@@ -102,6 +102,8 @@ object RouterScanner {
         wirelessCount = outcome?.wirelessCount ?: 0,
         externalIp = outcome?.externalIp,
         fingerprint = outcome?.fingerprint ?: fingerprint,
+        mac = com.geno1024.ai.netdis.net.ArpTable.normalizeMac(outcome?.mac)
+            ?: com.geno1024.ai.netdis.net.ArpTable.normalizeMac(config.mac),
     )
 
     /**
@@ -138,6 +140,7 @@ object RouterScanner {
         host = config.host,
         reachable = false,
         message = message,
+        mac = com.geno1024.ai.netdis.net.ArpTable.normalizeMac(config.mac),
     )
 
     fun hostRecordsOf(snapshot: RouterSnapshot): List<HostRecord> = snapshot.clients

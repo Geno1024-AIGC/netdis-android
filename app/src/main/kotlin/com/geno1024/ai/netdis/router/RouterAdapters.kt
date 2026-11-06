@@ -30,7 +30,7 @@ object RouterAdapters {
         DLinkAdapter,
     )
 
-    /** Types shown as chips in the router editor, newest adapter included. */
+    /** Types offered by the router editor's dropdown, newest adapter included. */
     val selectableTypes: List<RouterType> = listOf(RouterType.AUTO) + all.map { it.type }
 
     fun candidates(type: RouterType, brandHint: String? = null): List<RouterAdapter> {

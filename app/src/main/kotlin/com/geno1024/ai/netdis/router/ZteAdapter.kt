@@ -11,35 +11,52 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.util.Base64
 
 /**
- * ZTE home gateways expose a form-login web UI, not a documented API. Their
- * pages vary by model and firmware, so this adapter logs in with the common
- * `/asp/GetRandCount.asp` + base64 `/login.gch` flow, then reads whatever
- * HTML tables contain IPv4/MAC pairs. That makes it useful across the ZXHN /
- * F-series family even when a page name differs, and the traffic capture in
- * settings shows exactly which request a newer firmware rejects.
+ * ZTE ZXHN home gateways.
  *
- * Adding another brand follows the same shape: implement [RouterAdapter] and
- * register it in [RouterAdapters.all]. The scanner and editor pick it up.
+ * The E1600 (and the closely related F-series) log in with a token that is
+ * embedded in the landing page, then a one-time salt:
+ *
+ * 1. `GET /` sets a session cookie and contains
+ *    `addParameter("_sessionTOKEN", "…")`.
+ * 2. `GET /function_module/login_module/login_page/logintoken_lua.lua` returns
+ *    the salt as the text of an XML response.
+ * 3. `POST /` with `Username`, `Password = sha256(password + salt)`,
+ *    `action=login` and `_sessionTOKEN`.
+ *
+ * After login the client list is XML rather than HTML:
+ * `/common_page/Query_AccessDevice_lua.lua?Interface=2.4G|5G|LAN`. Status pages
+ * use the same `ParaName`/`ParaValue` instance shape.
+ *
+ * Older firmware without the token endpoint still works through the legacy
+ * `/asp/GetRandCount.asp` + base64 `/login.gch` flow.
  */
 object ZteAdapter : RouterAdapter {
 
     override val type: RouterType = RouterType.ZTE
 
-    private val clientPaths = listOf(
+    private val xmlHeaders = mapOf(
+        "X-Requested-With" to "XMLHttpRequest",
+        "Accept" to "application/xml, text/xml, */*",
+    )
+
+    private val clientInterfaces = listOf("2.4G", "5G", "LAN")
+
+    private val statusPaths = listOf(
+        "/common_page/ManagReg_lua.lua",
+        "/getpage.lua?pid=1005&nextpage=Internet_WANInfo_lua.lua",
+        "/common_page/Localnet_LanMgrIpv4_DHCPBasicCfg_lua.lua",
+        "/common_page/home_a_wlan_state.lua",
+    )
+
+    private val legacyClientPaths = listOf(
         "/getpage.gch?pid=1002&nextpage=IPv4IPv6_landevice_t.gch",
         "/getpage.gch?pid=1002&nextpage=net_clients_t.gch",
         "/getpage.gch?pid=1002&nextpage=dhcp_clients_t.gch",
         "/getpage.gch?pid=1002&nextpage=wlan_client_t.gch",
-        "/cgi-bin/luci/admin/status/clients",
-    )
-
-    private val statusPaths = listOf(
-        "/getpage.gch?pid=1002&nextpage=status_t.gch",
-        "/getpage.gch?pid=1002&nextpage=net_status_t.gch",
-        "/getpage.gch?pid=1002&nextpage=IPv4IPv6_status_t.gch",
     )
 
     override suspend fun scan(config: RouterConfig, timeoutMs: Int): RouterScanOutcome =
@@ -48,82 +65,121 @@ object ZteAdapter : RouterAdapter {
             val session = RouterSession()
 
             // The landing page normally sets the first session cookie.
-            RouterHttp.request(base + "/", session = session, timeoutMs = timeoutMs)
-            val token = fetchToken(base, session, timeoutMs)
-            val attempts = login(config, base, session, token, timeoutMs)
-            val connectivityError = attempts.firstOrNull { it.error != null }?.error
-
-            val pages = ArrayList<String>()
-            var sawLoginPage = false
-            for (path in clientPaths) {
-                val result = RouterHttp.request(base + path, session = session, timeoutMs = timeoutMs)
-                if (result.error != null) {
-                    if (pages.isEmpty()) {
-                        return@withContext failure(
-                            message = "无法连接中兴路由器：${result.error}",
-                            fingerprint = "中兴 ZTE",
-                        )
-                    }
-                    break
-                }
-                if (!result.ok) continue
-                pages += result.body
-                if (ZteParsing.looksLikeLoginPage(result.body)) {
-                    sawLoginPage = true
-                    break
-                }
-                if (ZteParsing.parseClients(result.body, config.id).isNotEmpty()) break
-            }
-            for (path in statusPaths) {
-                if (pages.any { ZteParsing.looksLoggedIn(it) }) break
-                val result = RouterHttp.request(base + path, session = session, timeoutMs = timeoutMs)
-                if (result.error != null || !result.ok) continue
-                pages += result.body
-                if (ZteParsing.looksLikeLoginPage(result.body)) {
-                    sawLoginPage = true
-                    break
-                }
-            }
-
-            val html = pages.joinToString("\n")
-            val clients = RouterParsing.mergeHosts(
-                pages.flatMap { ZteParsing.parseClients(it, config.id) }
-                    .filterNot { it.ip == config.host },
+            val landing = RouterHttp.request(
+                url = base + "/",
+                session = session,
+                timeoutMs = timeoutMs,
+                headers = mapOf("Accept" to "text/html, application/xhtml+xml, */*"),
             )
-            val loggedIn = clients.isNotEmpty() ||
-                pages.any { ZteParsing.looksLoggedIn(it) } ||
-                attempts.any {
-                    it.ok && !ZteParsing.looksLikeLoginPage(it.body) &&
-                        !ZteParsing.loginFailed(it.body)
-                }
-
-            if (!loggedIn) {
-                val rejected = attempts.any { ZteParsing.loginFailed(it.body) }
-                val message = when {
-                    attempts.all { it.error != null } ->
-                        "无法连接中兴路由器：${connectivityError ?: "网络不可达"}"
-
-                    rejected || sawLoginPage ->
-                        "登录失败（中兴用户名或密码错误，或页面仍要求登录）"
-
-                    else -> "已连接中兴路由器，但未识别登录响应"
-                }
-                return@withContext failure(message = message, fingerprint = "中兴 ZTE")
+            if (landing.error != null) {
+                return@withContext failure("无法连接中兴路由器：${landing.error}", "中兴 ZTE")
             }
 
-            val pairs = ZteParsing.tablePairs(html)
-            val model = ZteParsing.extractModel(pairs, html)
-            val firmware = ZteParsing.extractFirmware(pairs, html)
-            val uptime = ZteParsing.extractUptime(pairs)
-            val wanIp = ZteParsing.extractWanIp(pairs)
-            val wanGateway = ZteParsing.extractWanGateway(pairs)
-            val lanCidrs = ZteParsing.extractLanCidrs(pairs)
+            val token = ZteParsing.extractLoginToken(landing.body)
+            var loginOk = !ZteParsing.looksLikeLoginPage(landing.body)
+            var loginMessage: String? = null
+
+            if (!loginOk) {
+                if (token != null) {
+                    val salt = fetchSalt(base, session, timeoutMs)
+                    val result = modernLogin(config, base, session, token, salt, timeoutMs)
+                    if (result.error == null && result.ok && !ZteParsing.looksLikeLoginPage(result.body)) {
+                        loginOk = true
+                    } else {
+                        loginMessage = result.error
+                    }
+                }
+                if (!loginOk) {
+                    // Keep the old firmware path working; it costs two requests.
+                    loginOk = legacyLogin(config, base, session, token.orEmpty(), timeoutMs)
+                            .any { it.error == null && it.ok && !ZteParsing.looksLikeLoginPage(it.body) }
+                }
+            }
+
+            if (!loginOk) {
+                val message = when {
+                    loginMessage != null -> "无法连接中兴路由器：$loginMessage"
+                    else -> "登录失败（中兴用户名或密码错误，或页面仍要求登录）"
+                }
+                return@withContext failure(message, "中兴 ZTE")
+            }
+
+            val xmlPages = ArrayList<String>()
+            for (path in statusPaths) {
+                val result = RouterHttp.request(
+                    url = base + path + "?_=${System.currentTimeMillis()}",
+                    session = session,
+                    timeoutMs = timeoutMs,
+                    headers = xmlHeaders,
+                )
+                if (result.error != null) break
+                if (result.ok) xmlPages += result.body
+            }
+
+            val clients = ArrayList<HostRecord>()
+            for (iface in clientInterfaces) {
+                val result = RouterHttp.request(
+                    url = base + "/common_page/Query_AccessDevice_lua.lua?Interface=" +
+                        encode(iface) + "&_=${System.currentTimeMillis()}",
+                    session = session,
+                    timeoutMs = timeoutMs,
+                    headers = xmlHeaders,
+                )
+                if (result.error != null) break
+                if (!result.ok) continue
+                clients += ZteParsing.parseAccessDevices(result.body, config.id)
+            }
+
+            var legacyHtml = ""
+            if (clients.isEmpty()) {
+                val html = ArrayList<String>()
+                for (path in legacyClientPaths) {
+                    val result = RouterHttp.request(base + path, session = session, timeoutMs = timeoutMs)
+                    if (result.error != null) break
+                    if (!result.ok) continue
+                    html += result.body
+                    if (ZteParsing.parseClients(result.body, config.id).isNotEmpty()) break
+                }
+                legacyHtml = html.joinToString("\n")
+                clients += html.flatMap { ZteParsing.parseClients(it, config.id) }
+            }
+
+            val merged = RouterParsing.mergeHosts(
+                clients.filterNot { it.ip == config.host },
+            )
+            val instances = xmlPages.flatMap(ZteParsing::parseInstances)
+            val model = value(instances, "ModelName") ?: ZteParsing.extractModel(
+                ZteParsing.tablePairs(legacyHtml),
+                legacyHtml,
+            )
+            val firmware = value(instances, "SoftwareVer") ?: ZteParsing.extractFirmware(
+                ZteParsing.tablePairs(legacyHtml),
+                legacyHtml,
+            )
+            val uptime = value(instances, "UpTime")?.toLongOrNull()
+                ?.let(RouterParsing::formatUptime)
+                ?.takeIf { it.isNotBlank() }
+            val wan = instances.firstOrNull {
+                it["IPAddress"] != null && (it["GateWay"] != null || it["SubNetMask"] != null)
+            }
+            val wanIp = wan?.get("IPAddress")
+            val wanGateway = wan?.get("GateWay")
+            val dnsServers = listOfNotNull(wan?.get("DNS1"), wan?.get("DNS2"))
+                .map { it.trim() }
+                .filter { Subnet.parseIp(it) != null && it != "0.0.0.0" }
+                .distinct()
+            val lanIp = value(instances, "BrIPAddr") ?: value(instances, "IPAddr")
+            val lanMask = value(instances, "SubMask") ?: value(instances, "SubnetMask")
+            val lanCidrs = listOfNotNull(RouterParsing.cidrFrom(lanIp ?: "", lanMask))
+            val mac = ArpTable.normalizeMac(value(instances, "WorkIFMac"))
+                ?: ArpTable.normalizeMac(value(instances, "MACAddress"))
+                ?: ArpTable.normalizeMac(config.mac)
 
             RouterScanOutcome(
                 success = true,
                 type = type,
-                message = if (clients.isEmpty()) {
-                    "已登录中兴路由器（未解析到客户端表格，可开启抓包）"
+                message = if (merged.isEmpty()) {
+                    "已登录中兴路由器（未解析到客户端列表）"
                 } else {
                     "已登录中兴路由器"
                 },
@@ -133,27 +189,61 @@ object ZteAdapter : RouterAdapter {
                 wanIp = wanIp,
                 wanGateway = wanGateway,
                 lanCidrs = lanCidrs,
-                clients = clients,
-                wirelessCount = clients.count { it.link == LinkKind.WIFI },
+                dnsServers = dnsServers,
+                clients = merged,
+                wirelessCount = merged.count { it.link == LinkKind.WIFI },
                 fingerprint = listOfNotNull(model, firmware).joinToString(" · ")
                     .ifBlank { "中兴 ZTE" },
+                mac = mac,
             )
         }
 
-    private suspend fun fetchToken(base: String, session: RouterSession, timeoutMs: Int): String {
-        val paths = listOf(
-            "/asp/GetRandCount.asp",
-            "/getpage.gch?pid=1002&nextpage=login.gch",
+    private fun value(instances: List<Map<String, String>>, key: String): String? =
+        instances.firstNotNullOfOrNull { it[key]?.trim()?.takeIf(String::isNotBlank) }
+
+    private suspend fun fetchSalt(base: String, session: RouterSession, timeoutMs: Int): String {
+        val result = RouterHttp.request(
+            url = base + "/function_module/login_module/login_page/logintoken_lua.lua" +
+                "?_=${System.currentTimeMillis()}",
+            session = session,
+            timeoutMs = timeoutMs,
+            headers = xmlHeaders + ("Referer" to base + "/"),
         )
-        for (path in paths) {
-            val result = RouterHttp.request(base + path, session = session, timeoutMs = timeoutMs)
-            if (result.error != null) continue
-            ZteParsing.extractRand(result.body)?.let { return it }
-        }
-        return ""
+        if (result.error != null || !result.ok) return ""
+        return ZteParsing.extractSalt(result.body)
     }
 
-    private suspend fun login(
+    private suspend fun modernLogin(
+        config: RouterConfig,
+        base: String,
+        session: RouterSession,
+        token: String,
+        salt: String,
+        timeoutMs: Int,
+    ): HttpResult {
+        val username = config.username.ifBlank { "admin" }
+        val passwordHash = sha256(config.password + salt)
+        val form = buildString {
+            append("Username=").append(encode(username))
+            append("&Password=").append(encode(passwordHash))
+            append("&action=login")
+            append("&_sessionTOKEN=").append(encode(token))
+        }
+        return RouterHttp.request(
+            url = base + "/",
+            method = "POST",
+            body = form,
+            contentType = "application/x-www-form-urlencoded",
+            session = session,
+            timeoutMs = timeoutMs,
+            headers = xmlHeaders + mapOf(
+                "Referer" to base + "/",
+                "Origin" to base,
+            ),
+        )
+    }
+
+    private suspend fun legacyLogin(
         config: RouterConfig,
         base: String,
         session: RouterSession,
@@ -182,20 +272,8 @@ object ZteAdapter : RouterAdapter {
             results += result
             if (result.error != null) break
             if (result.code !in 200..399) continue
-            if (ZteParsing.loginFailed(result.body)) continue
-            if (!ZteParsing.looksLikeLoginPage(result.body)) break
-        }
-
-        // Newer ZTE firmware sometimes exposes the LuCI-style form instead.
-        if (results.none { it.ok && !ZteParsing.looksLikeLoginPage(it.body) }) {
-            results += RouterHttp.request(
-                url = base + "/cgi-bin/luci",
-                method = "POST",
-                body = "username=${encode(username)}&password=${encode(config.password)}",
-                contentType = "application/x-www-form-urlencoded",
-                session = session,
-                timeoutMs = timeoutMs,
-            )
+            if (ZteParsing.looksLikeLoginPage(result.body)) continue
+            break
         }
         return results
     }
@@ -208,6 +286,10 @@ object ZteAdapter : RouterAdapter {
             fingerprint = fingerprint,
         )
 
+    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(StandardCharsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+
     private fun base64(value: String): String =
         Base64.getEncoder().encodeToString(value.toByteArray(StandardCharsets.UTF_8))
 
@@ -215,9 +297,9 @@ object ZteAdapter : RouterAdapter {
 }
 
 /**
- * Pure HTML helpers, kept separate so firmware-specific column layouts can be
- * tested without a router. The parser deliberately looks for an IPv4 cell and
- * a MAC cell anywhere in a table row instead of assuming fixed column indexes.
+ * Pure ZTE helpers, kept separate so firmware-specific parsing can be tested
+ * without a router. HTML tables are still accepted for older firmware; the
+ * E1600 family returns XML with `ParaName`/`ParaValue` pairs.
  */
 object ZteParsing {
 
@@ -231,8 +313,19 @@ object ZteParsing {
         "(?:GetRandCount|_sessionTOKEN|rand|token)\\s*[=:]\\s*[\"']?([A-Za-z0-9+/=_-]{4,64})",
         RegexOption.IGNORE_CASE,
     )
+    private val LOGIN_TOKEN = Regex(
+        "addParameter\\(\\s*\"_sessionTOKEN\"\\s*,\\s*\"([^\"]+)\"\\s*\\)",
+    )
+    private val INSTANCE = Regex(
+        "<Instance[^>]*>(.*?)</Instance>",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+    )
+    private val PARA = Regex(
+        "<ParaName[^>]*>(.*?)</ParaName>\\s*<ParaValue[^>]*>(.*?)</ParaValue>",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+    )
     private val PASSWORD_INPUT = Regex(
-        "type\\s*=\\s*[\"']?password|name\\s*=\\s*[\"']?password",
+        "type\\s*=\\s*[\"']?password|name\\s*=\\s*[\"']?password|Frm_Password",
         RegexOption.IGNORE_CASE,
     )
     private val LOGIN_WORDS = Regex("login|登录|用户名|Username", RegexOption.IGNORE_CASE)
@@ -260,12 +353,65 @@ object ZteParsing {
         return RAND_FIELD.find(body)?.groupValues?.getOrNull(1)
     }
 
+    /** `addParameter("_sessionTOKEN", "397667032103403366315799")` in the login page. */
+    fun extractLoginToken(html: String): String? =
+        LOGIN_TOKEN.find(html)?.groupValues?.getOrNull(1)
+            ?: RAND_FIELD.find(html)?.groupValues?.getOrNull(1)
+
+    /** The token endpoint answers `<ajax_response_xml_root>63178618</ajax_response_xml_root>`. */
+    fun extractSalt(body: String): String {
+        val text = decodeEntities(body.replace(TAG, "")).trim()
+        return text.takeIf { it.length in 1..64 && !it.contains('<') }.orEmpty()
+    }
+
     fun loginFailed(html: String): Boolean = FAILURE_WORDS.containsMatchIn(html)
 
     fun looksLoggedIn(html: String): Boolean = LOGOUT_WORDS.containsMatchIn(html)
 
     fun looksLikeLoginPage(html: String): Boolean =
         !looksLoggedIn(html) && PASSWORD_INPUT.containsMatchIn(html) && LOGIN_WORDS.containsMatchIn(html)
+
+    /** Flattens one XML response into `ParaName` → `ParaValue` maps, one per instance. */
+    fun parseInstances(xml: String): List<Map<String, String>> =
+        INSTANCE.findAll(xml).map { match ->
+            PARA.findAll(match.groupValues[1]).associate { pair ->
+                clean(pair.groupValues[1]) to decodeEntities(pair.groupValues[2]).trim()
+            }
+        }.filter { it.isNotEmpty() }.toList()
+
+    /**
+     * Client rows from `Query_AccessDevice_lua.lua`. `Active` is the online flag;
+     * `Band`/`Interface` distinguishes Wi-Fi from the wired LAN.
+     */
+    fun parseAccessDevices(xml: String, routerId: String? = null): List<HostRecord> =
+        parseInstances(xml).mapNotNull { instance ->
+            val ip = instance["IPAddress"]?.trim()
+                ?.takeIf { Subnet.parseIp(it) != null && isHostAddress(it) }
+                ?: return@mapNotNull null
+            val mac = instance["MACAddress"]?.let(ArpTable::normalizeMac)
+            val hostname = instance["HostName"]?.takeIf { it.isNotBlank() }
+                ?: instance["DevName"]?.takeIf { it.isNotBlank() }
+            val band = instance["Band"]?.takeIf { it.isNotBlank() }
+                ?: instance["ConnectType"]?.takeIf { it.isNotBlank() }
+            val iface = instance["Interface"].orEmpty()
+            val wireless = WIRELESS_WORDS.containsMatchIn(band.orEmpty() + " " + iface)
+            val active = instance["Active"]?.trim() != "0"
+            HostRecord(
+                ip = ip,
+                mac = mac,
+                hostname = hostname,
+                online = active,
+                link = if (wireless) LinkKind.WIFI else LinkKind.ETHERNET,
+                sources = setOf(HostSource.DHCP, HostSource.ROUTER_ARP),
+                routerId = routerId,
+                extra = buildMap {
+                    put("lease", "DHCP")
+                    band?.let { put("band", it) }
+                    if (iface.isNotBlank()) put("interface", iface)
+                    instance["AliasName"]?.takeIf { it.isNotBlank() }?.let { put("ssid", it) }
+                },
+            )
+        }.distinctBy { it.ip }
 
     fun parseClients(html: String, routerId: String? = null): List<HostRecord> {
         val result = ArrayList<HostRecord>()
@@ -403,16 +549,23 @@ object ZteParsing {
             CELL.findAll(row.groupValues[1]).map { clean(it.groupValues[1]) }.toList()
         }.filter { it.isNotEmpty() }.toList()
 
-    fun clean(fragment: String): String = fragment
-        .replace(TAG, " ")
+    fun clean(fragment: String): String = decodeEntities(fragment.replace(TAG, " "))
+        .replace(Regex("\\s+"), " ")
+        .trim()
+
+    fun decodeEntities(text: String): String = text
         .replace("&nbsp;", " ", ignoreCase = true)
         .replace("&amp;", "&", ignoreCase = true)
         .replace("&lt;", "<", ignoreCase = true)
         .replace("&gt;", ">", ignoreCase = true)
         .replace("&quot;", "\"", ignoreCase = true)
         .replace("&#39;", "'", ignoreCase = true)
-        .replace(Regex("\\s+"), " ")
-        .trim()
+        .replace(Regex("&#32;")) { " " }
+        .replace(Regex("&#(\\d+);")) { match ->
+            match.groupValues[1].toIntOrNull()?.let { code ->
+                runCatching { String(Character.toChars(code)) }.getOrDefault(match.value)
+            } ?: match.value
+        }
 
     private fun isHostAddress(ip: String): Boolean {
         val first = ip.substringBefore('.').toIntOrNull() ?: return false

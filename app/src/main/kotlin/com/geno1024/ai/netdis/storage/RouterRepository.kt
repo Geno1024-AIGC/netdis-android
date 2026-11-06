@@ -2,7 +2,9 @@ package com.geno1024.ai.netdis.storage
 
 import android.content.Context
 import com.geno1024.ai.netdis.model.RouterConfig
+import com.geno1024.ai.netdis.model.RouterSnapshot
 import com.geno1024.ai.netdis.model.RouterType
+import com.geno1024.ai.netdis.net.ArpTable
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -28,6 +30,7 @@ object RouterJson {
                     put("password", seal(config.password))
                     put("enabled", config.enabled)
                     put("note", config.note)
+                    put("mac", config.mac)
                 },
             )
         }
@@ -55,10 +58,37 @@ object RouterJson {
                 password = if (token.isBlank()) "" else unseal(token).orEmpty(),
                 enabled = entry.optBoolean("enabled", true),
                 note = entry.optString("note"),
+                mac = entry.optString("mac").takeIf { it.isNotBlank() }
+                    ?.let(ArpTable::normalizeMac),
             )
         }
         return result
     }
+}
+
+/**
+ * Attaches credentials to a router even after DHCP hands it a different address.
+ * A MAC is the durable key; the address is only a fallback for firmware whose
+ * client table does not expose the router's own MAC.
+ */
+object RouterMatch {
+
+    fun normalizeMac(raw: String?): String? = ArpTable.normalizeMac(raw)
+
+    fun find(configs: List<RouterConfig>, ip: String?, mac: String?): RouterConfig? {
+        val wantedMac = normalizeMac(mac)
+        if (wantedMac != null) {
+            configs.firstOrNull { normalizeMac(it.mac) == wantedMac }?.let { return it }
+        }
+        if (!ip.isNullOrBlank()) {
+            configs.firstOrNull { it.host == ip }?.let { return it }
+        }
+        return null
+    }
+
+    fun find(configs: List<RouterConfig>, snapshot: RouterSnapshot): RouterConfig? =
+        snapshot.configId?.let { id -> configs.firstOrNull { it.id == id } }
+            ?: find(configs, snapshot.host, snapshot.mac)
 }
 
 class RouterRepository(
