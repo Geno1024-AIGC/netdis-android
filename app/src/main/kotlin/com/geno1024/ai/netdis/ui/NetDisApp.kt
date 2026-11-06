@@ -121,6 +121,7 @@ fun NetDisApp(viewModel: AppViewModel = viewModel()) {
                             onSettingsChange = viewModel::updateSettings,
                             onCheckUpdate = viewModel::checkUpdate,
                             onDownloadUpdate = viewModel::downloadUpdate,
+                            onUpdateMessage = viewModel::setUpdateMessage,
                         )
                     }
                 }

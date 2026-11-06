@@ -261,6 +261,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(update = it.update.copy(info = null, message = null)) }
     }
 
+    /** Surfaces the result of handing the APK to the system installer. */
+    fun setUpdateMessage(message: String) {
+        _state.update { it.copy(update = it.update.copy(message = message)) }
+    }
+
     private fun mirrors(): List<Mirror> = buildList {
         add(Mirrors.resolve(_state.value.settings.updateMirrorPrefix))
         addAll(Mirrors.PRESETS)

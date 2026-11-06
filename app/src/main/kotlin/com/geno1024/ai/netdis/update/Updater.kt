@@ -90,13 +90,24 @@ object Updater {
      * directly from GitHub in [check]. A file is only returned when the digest
      * matches; the caller may then retry with the next mirror.
      */
+    /**
+     * Installation goes through the `updates/` FileProvider root declared in
+     * res/xml/file_paths.xml, so downloads must live below this directory.
+     */
+    fun downloadDir(cacheDir: File): File = File(cacheDir, "updates")
+
     suspend fun download(
         info: CanaryInfo,
         mirror: Mirror,
         cacheDir: File,
         onProgress: (Float) -> Unit = {},
     ): DownloadResult = withContext(Dispatchers.IO) {
-        val target = File(cacheDir, "netdis-${info.runNumber}.apk")
+        val dir = downloadDir(cacheDir).apply { mkdirs() }
+        // Drop APKs from earlier versions so the cache cannot grow forever.
+        dir.listFiles { file -> file.name.startsWith("netdis-") && file.extension == "apk" }
+            ?.filter { it.name != "netdis-${info.runNumber}.apk" }
+            ?.forEach { it.delete() }
+        val target = File(dir, "netdis-${info.runNumber}.apk")
         val url = mirror.wrap(CanaryManifest.apkUrl(info.assetName))
         try {
             val connection = open(url)

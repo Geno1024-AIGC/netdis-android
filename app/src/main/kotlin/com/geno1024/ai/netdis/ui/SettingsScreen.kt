@@ -34,6 +34,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.geno1024.ai.netdis.model.AppSettings
 import com.geno1024.ai.netdis.model.ThemeMode
 import com.geno1024.ai.netdis.ui.theme.Mint
@@ -63,6 +65,7 @@ fun SettingsScreen(
     onSettingsChange: ((AppSettings) -> AppSettings) -> Unit,
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: () -> Unit,
+    onUpdateMessage: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val settings = state.settings
@@ -70,12 +73,24 @@ fun SettingsScreen(
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
 
+    // The user often leaves for the permission page and comes straight back, so
+    // re-read the grant on every resume instead of trusting the first check.
+    var canInstall by remember { mutableStateOf(ApkInstaller.canRequestInstall(context)) }
+    LifecycleResumeEffect(Unit) {
+        canInstall = ApkInstaller.canRequestInstall(context)
+        onPauseOrDispose { }
+    }
+
     fun install(file: java.io.File) {
-        if (ApkInstaller.canRequestInstall(context)) {
-            runCatching { context.startActivity(ApkInstaller.installIntent(context, file)) }
-        } else {
-            runCatching { context.startActivity(ApkInstaller.settingsIntent(context)) }
+        if (!ApkInstaller.canRequestInstall(context)) {
+            onUpdateMessage(
+                ApkInstaller.launchSettings(context) ?: "请允许本应用安装未知来源应用，然后返回再点一次安装",
+            )
+            return
         }
+        onUpdateMessage(
+            ApkInstaller.launchInstall(context, file) ?: "已打开系统安装器，请在弹窗中确认安装",
+        )
     }
 
     Column(
@@ -242,7 +257,7 @@ fun SettingsScreen(
                     Button(onClick = { install(file) }, modifier = Modifier.weight(1f)) {
                         Icon(Icons.Outlined.InstallMobile, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text(if (ApkInstaller.canRequestInstall(context)) "安装更新" else "允许安装后更新")
+                        Text(if (canInstall) "安装更新" else "允许安装后更新")
                     }
                 } else {
                     Button(
@@ -257,7 +272,7 @@ fun SettingsScreen(
                 }
             }
 
-            if (update.file != null && !ApkInstaller.canRequestInstall(context)) {
+            if (update.file != null && !canInstall) {
                 Text(
                     "系统默认禁止安装未知来源应用。点击安装按钮会先跳到授权页，允许本应用安装后返回即可。",
                     style = MaterialTheme.typography.labelSmall,

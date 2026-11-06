@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Keep in sync with Updater.downloadDir(): downloaded APKs must live under
+     this root or FileProvider refuses to build a URI for the installer. -->
 <paths>
     <cache-path name="updates" path="updates/" />
 </paths>
