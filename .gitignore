@@ -5,6 +5,8 @@ build/
 local.properties
 .DS_Store
 captures/
+router-capture/
+__pycache__/
 .externalNativeBuild/
 .cxx/
 *.apk

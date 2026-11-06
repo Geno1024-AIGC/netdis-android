@@ -67,10 +67,6 @@ class RouterSession {
  * The HTTP client used only for LAN routers. Home routers commonly ship with
  * self-signed certificates, so HTTPS verification is relaxed here and nowhere
  * else in the app; the updater keeps the platform's normal trust chain.
- *
- * When traffic capture is enabled, every exchange is copied into the bounded
- * [TrafficLog] with credentials masked. That log is how a firmware variant can
- * be diagnosed without root or a packet capture app.
  */
 object RouterHttp {
 
@@ -96,8 +92,8 @@ object RouterHttp {
         password: String? = null,
         timeoutMs: Int = 4000,
         session: RouterSession? = null,
+        headers: Map<String, String> = emptyMap(),
     ): HttpResult = withContext(Dispatchers.IO) {
-        val started = System.currentTimeMillis()
         var connection: HttpURLConnection? = null
         var status = -1
         var responseBody: String? = null
@@ -112,6 +108,7 @@ object RouterHttp {
             requestHeaders["Authorization"] = "Basic $token"
         }
         if (body != null) requestHeaders["Content-Type"] = contentType
+        requestHeaders.putAll(headers)
         session?.cookieHeader()?.let { requestHeaders["Cookie"] = it }
 
         try {
@@ -153,22 +150,6 @@ object RouterHttp {
             error = e.message ?: e.javaClass.simpleName
             HttpResult(-1, "", responseHeaders, error)
         } finally {
-            if (TrafficLog.enabled) {
-                TrafficLog.record(
-                    TrafficEntry(
-                        at = started,
-                        method = method,
-                        url = TrafficSanitizer.url(url),
-                        requestHeaders = TrafficSanitizer.headers(requestHeaders),
-                        requestBody = TrafficSanitizer.body(body),
-                        status = status,
-                        responseHeaders = TrafficSanitizer.headers(responseHeaders),
-                        responseBody = TrafficSanitizer.body(responseBody),
-                        durationMs = System.currentTimeMillis() - started,
-                        error = error,
-                    ),
-                )
-            }
             connection?.disconnect()
         }
     }

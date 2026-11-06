@@ -157,7 +157,7 @@ object WebUiScanner {
                 success = true,
                 type = profile.type,
                 message = if (clients.isEmpty()) {
-                    "已登录${profile.brand}路由器（未解析到客户端列表，可开启抓包）"
+                    "已登录${profile.brand}路由器（未解析到客户端列表）"
                 } else {
                     "已登录${profile.brand}路由器"
                 },

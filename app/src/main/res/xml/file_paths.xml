@@ -3,7 +3,4 @@
      this root or FileProvider refuses to build a URI for the installer. -->
 <paths>
     <cache-path name="updates" path="updates/" />
-    <!-- Keep in sync with TrafficExport.cacheDir(): exported captures are
-         shared from this root, so the two names must not drift apart. -->
-    <cache-path name="traffic" path="traffic/" />
 </paths>
