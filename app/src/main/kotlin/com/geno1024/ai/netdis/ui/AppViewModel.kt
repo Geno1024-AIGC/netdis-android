@@ -5,15 +5,22 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.geno1024.ai.netdis.BuildConfig
 import com.geno1024.ai.netdis.model.AppSettings
+import com.geno1024.ai.netdis.model.HostRecord
 import com.geno1024.ai.netdis.model.RouterConfig
+import com.geno1024.ai.netdis.model.RouterSnapshot
 import com.geno1024.ai.netdis.model.ScanProgress
 import com.geno1024.ai.netdis.model.ScanSnapshot
 import com.geno1024.ai.netdis.model.ScanStage
 import com.geno1024.ai.netdis.net.DeviceScanner
+import com.geno1024.ai.netdis.router.RouterParsing
+import com.geno1024.ai.netdis.router.RouterScanner
+import com.geno1024.ai.netdis.router.TrafficLog
 import com.geno1024.ai.netdis.storage.CredentialVault
+import com.geno1024.ai.netdis.storage.DeviceNotesStore
 import com.geno1024.ai.netdis.storage.RouterRepository
 import com.geno1024.ai.netdis.storage.SettingsStore
 import com.geno1024.ai.netdis.storage.SnapshotStore
+import com.geno1024.ai.netdis.topo.TopologyBuilder
 import com.geno1024.ai.netdis.update.CanaryInfo
 import com.geno1024.ai.netdis.update.CanaryManifest
 import com.geno1024.ai.netdis.update.DownloadResult
@@ -41,6 +48,15 @@ data class UpdateUiState(
     val message: String? = null,
 )
 
+/** Per-router result of an explicit "log in and refresh" tap. */
+data class RouterLoginUiState(
+    val running: Boolean = false,
+    val success: Boolean? = null,
+    val message: String = "",
+    val clientCount: Int = 0,
+    val finishedAt: Long = 0,
+)
+
 data class AppUiState(
     val settings: AppSettings = AppSettings(),
     val routers: List<RouterConfig> = emptyList(),
@@ -51,6 +67,8 @@ data class AppUiState(
     val update: UpdateUiState = UpdateUiState(),
     /** `null` until the vault has picked a key source on a worker thread. */
     val credentialMode: CredentialVault.Mode? = null,
+    val routerLogins: Map<String, RouterLoginUiState> = emptyMap(),
+    val trafficCount: Int = 0,
 ) {
     val versionName: String get() = BuildConfig.VERSION_NAME
 }
@@ -61,13 +79,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val credentialVault = CredentialVault(application)
     private val routerRepository = RouterRepository(application, credentialVault)
     private val snapshotStore = SnapshotStore(application)
+    private val deviceNotes = DeviceNotesStore(application)
     private val scanner = DeviceScanner(application)
+
+    private val initialSettings = settingsStore.load()
+    private val initialRouters = routerRepository.load()
 
     private val _state = MutableStateFlow(
         AppUiState(
-            settings = settingsStore.load(),
-            routers = routerRepository.load(),
-            snapshot = snapshotStore.load(),
+            settings = initialSettings,
+            routers = initialRouters,
+            snapshot = snapshotStore.load()?.let { annotate(it, initialRouters) },
+            trafficCount = TrafficLog.count(),
         ),
     )
     val state: StateFlow<AppUiState> = _state.asStateFlow()
@@ -75,6 +98,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var scanJob: Job? = null
 
     init {
+        // Capture is opt-in and lives in a process-wide buffer because the HTTP
+        // client is a singleton shared by every adapter.
+        TrafficLog.enabled = initialSettings.captureTraffic
         // Key generation can hit the TEE and fail, so never do it on the main
         // thread. The result also tells the UI whether passwords are protected
         // by the hardware keystore or by the software fallback.
@@ -96,14 +122,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             try {
-                val snapshot = scanner.scan(current.settings, current.routers) { progress ->
+                val scanned = scanner.scan(current.settings, current.routers) { progress ->
                     _state.update { it.copy(progress = progress) }
                 }
+                val snapshot = annotate(scanned, current.routers)
                 snapshotStore.save(snapshot)
                 _state.update {
                     it.copy(
                         snapshot = snapshot,
                         scanning = false,
+                        trafficCount = TrafficLog.count(),
                         progress = ScanProgress(
                             stage = ScanStage.DONE,
                             fraction = 1f,
@@ -175,8 +203,126 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
         val updated = transform(_state.value.settings)
         settingsStore.save(updated)
-        _state.update { it.copy(settings = updated) }
+        TrafficLog.enabled = updated.captureTraffic
+        _state.update { it.copy(settings = updated, trafficCount = TrafficLog.count()) }
     }
+
+    /**
+     * Logs into one saved router immediately instead of waiting for a full LAN
+     * scan, replaces its snapshot and rebuilds the graph in place. A failure
+     * keeps the previous client picture and surfaces the reason on the card.
+     */
+    fun loginRouter(configId: String) {
+        val config = _state.value.routers.firstOrNull { it.id == configId } ?: return
+        if (_state.value.routerLogins[configId]?.running == true) return
+        setRouterLogin(configId, RouterLoginUiState(running = true, message = "正在登录…"))
+        viewModelScope.launch {
+            val timeout = (_state.value.settings.probeTimeoutMs * 8 + 1200).coerceAtLeast(3500)
+            val result = try {
+                RouterScanner.scan(config, timeout)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setRouterLogin(
+                    configId,
+                    RouterLoginUiState(success = false, message = e.message ?: "登录失败"),
+                )
+                return@launch
+            }
+
+            if (result.reachable) {
+                val now = System.currentTimeMillis()
+                val current = _state.value.snapshot
+                val base = current ?: ScanSnapshot(
+                    startedAt = now,
+                    finishedAt = now,
+                    local = null,
+                )
+                val routers = base.routers.filterNot { it.sameRouterAs(config) } + result
+                // Fold the freshly fetched clients into the device list too, so
+                // the Devices tab and the graph agree without a full rescan.
+                val hosts = RouterParsing.mergeHosts(base.hosts + result.clients)
+                val rebuilt = annotate(
+                    base.copy(routers = routers, hosts = hosts, finishedAt = now),
+                    _state.value.routers,
+                )
+                snapshotStore.save(rebuilt)
+                _state.update {
+                    it.copy(
+                        snapshot = rebuilt,
+                        trafficCount = TrafficLog.count(),
+                        routerLogins = it.routerLogins + (
+                            configId to RouterLoginUiState(
+                                success = true,
+                                message = result.message ?: "已登录",
+                                clientCount = result.clientCount,
+                                finishedAt = now,
+                            )
+                            ),
+                    )
+                }
+            } else {
+                setRouterLogin(
+                    configId,
+                    RouterLoginUiState(
+                        success = false,
+                        message = result.message ?: "登录失败",
+                        finishedAt = System.currentTimeMillis(),
+                    ),
+                )
+                _state.update {
+                    it.copy(error = result.message ?: "登录失败", trafficCount = TrafficLog.count())
+                }
+            }
+        }
+    }
+
+    fun saveDeviceNote(host: HostRecord, alias: String, note: String) {
+        deviceNotes.save(host, alias, note)
+        refreshNotes()
+    }
+
+    fun deleteDeviceNote(host: HostRecord) {
+        deviceNotes.remove(host)
+        refreshNotes()
+    }
+
+    fun clearTraffic() {
+        TrafficLog.clear()
+        _state.update { it.copy(trafficCount = 0) }
+    }
+
+    private fun refreshNotes() {
+        val current = _state.value.snapshot ?: return
+        val updated = annotate(current, _state.value.routers)
+        snapshotStore.save(updated)
+        _state.update { it.copy(snapshot = updated) }
+    }
+
+    private fun setRouterLogin(configId: String, state: RouterLoginUiState) {
+        _state.update { it.copy(routerLogins = it.routerLogins + (configId to state)) }
+    }
+
+    /**
+     * Notes are the source of truth, so they are reapplied after loading a
+     * snapshot, after a scan and after an explicit router login. That also
+     * removes a label whose note was deleted.
+     */
+    private fun annotate(snapshot: ScanSnapshot, configs: List<RouterConfig>): ScanSnapshot {
+        val notes = deviceNotes.load()
+        val hosts = snapshot.hosts.map { deviceNotes.apply(it, notes) }
+        val routers = snapshot.routers.map { router ->
+            router.copy(clients = router.clients.map { deviceNotes.apply(it, notes) })
+        }
+        return snapshot.copy(
+            hosts = hosts,
+            routers = routers,
+            graph = TopologyBuilder.build(snapshot.local, hosts, routers, configs),
+        )
+    }
+
+    private fun RouterSnapshot.sameRouterAs(config: RouterConfig): Boolean =
+        configId == config.id || (configId == null && host == config.host)
 
     fun checkUpdate() {
         if (_state.value.update.checking || _state.value.update.downloading) return

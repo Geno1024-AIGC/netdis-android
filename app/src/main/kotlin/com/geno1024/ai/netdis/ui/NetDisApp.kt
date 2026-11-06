@@ -111,6 +111,7 @@ fun NetDisApp(viewModel: AppViewModel = viewModel()) {
                             onSave = viewModel::saveRouter,
                             onDelete = viewModel::deleteRouter,
                             onToggle = viewModel::setRouterEnabled,
+                            onLogin = viewModel::loginRouter,
                             onNodeClick = { selectedNode = it },
                             initialHost = initialRouterHost,
                             onInitialHostConsumed = { initialRouterHost = null },
@@ -122,13 +123,19 @@ fun NetDisApp(viewModel: AppViewModel = viewModel()) {
                             onCheckUpdate = viewModel::checkUpdate,
                             onDownloadUpdate = viewModel::downloadUpdate,
                             onUpdateMessage = viewModel::setUpdateMessage,
+                            onClearTraffic = viewModel::clearTraffic,
                         )
                     }
                 }
             }
         }
 
-        selectedNode?.let { node ->
+        // Re-read the selected node from the latest graph so a note edit or a
+        // router login updates the open sheet without closing it.
+        val liveNode = selectedNode?.let { picked ->
+            state.snapshot?.graph?.nodes?.firstOrNull { it.id == picked.id } ?: picked
+        }
+        liveNode?.let { node ->
             NodeDetailSheet(
                 node = node,
                 snapshot = state.snapshot,
@@ -143,6 +150,10 @@ fun NetDisApp(viewModel: AppViewModel = viewModel()) {
                     tabName = Destination.TOPOLOGY.name
                     viewModel.startScan()
                 },
+                onSaveNote = viewModel::saveDeviceNote,
+                onDeleteNote = viewModel::deleteDeviceNote,
+                routerLogin = node.router?.id?.let(state.routerLogins::get),
+                onLoginRouter = { viewModel.loginRouter(it.id) },
             )
         }
     }

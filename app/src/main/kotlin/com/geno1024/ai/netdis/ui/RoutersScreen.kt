@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Login
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.outlined.Router
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -54,8 +56,8 @@ import androidx.compose.ui.unit.dp
 import com.geno1024.ai.netdis.model.NodeKind
 import com.geno1024.ai.netdis.model.RouterConfig
 import com.geno1024.ai.netdis.model.RouterSnapshot
-import com.geno1024.ai.netdis.model.RouterType
 import com.geno1024.ai.netdis.model.TopologyNode
+import com.geno1024.ai.netdis.router.RouterAdapters
 import com.geno1024.ai.netdis.storage.CredentialVault
 import com.geno1024.ai.netdis.ui.theme.Mint
 
@@ -70,6 +72,7 @@ fun RoutersScreen(
     onSave: (RouterConfig) -> Unit,
     onDelete: (String) -> Unit,
     onToggle: (String, Boolean) -> Unit,
+    onLogin: (String) -> Unit,
     onNodeClick: (TopologyNode) -> Unit,
     modifier: Modifier = Modifier,
     initialHost: String? = null,
@@ -145,9 +148,11 @@ fun RoutersScreen(
                     RouterCard(
                         config = config,
                         snapshot = snapshot,
+                        login = state.routerLogins[config.id],
                         onEdit = { draft = config },
                         onDelete = { pendingDelete = config },
                         onToggle = { onToggle(config.id, it) },
+                        onLogin = { onLogin(config.id) },
                         onOpen = {
                             state.snapshot?.graph?.nodes
                                 ?.firstOrNull { node -> node.kind == NodeKind.ROUTER && node.routerId == config.id }
@@ -211,24 +216,35 @@ fun RoutersScreen(
 private fun RouterCard(
     config: RouterConfig,
     snapshot: RouterSnapshot?,
+    login: RouterLoginUiState?,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onToggle: (Boolean) -> Unit,
+    onLogin: () -> Unit,
     onOpen: () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
     val reachable = snapshot?.reachable == true
-    val accent = if (reachable) Mint else scheme.outline
+    val hasCredentials = config.username.isNotBlank() || config.password.isNotBlank()
+    val loginFailed = login?.success == false
+    val accent = when {
+        login?.running == true -> scheme.primary
+        reachable -> Mint
+        loginFailed -> scheme.error
+        else -> scheme.outline
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
         color = scheme.surface.copy(alpha = if (config.enabled) 0.78f else 0.5f),
         border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
-        onClick = onOpen,
+        // Tapping the card is the primary action: log in with the stored
+        // credentials. Without credentials it opens the editor instead.
+        onClick = { if (hasCredentials) onLogin() else onEdit() },
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                KindAvatar(Icons.Outlined.Router, if (reachable) Mint else scheme.onSurfaceVariant, size = 42.dp)
+                KindAvatar(Icons.Outlined.Router, accent, size = 42.dp)
                 Column(Modifier.padding(start = 12.dp).weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -244,7 +260,7 @@ private fun RouterCard(
                             color = scheme.surfaceContainerHigh.copy(alpha = 0.85f),
                         ) {
                             Text(
-                                if (config.type == RouterType.AUTO) "自动识别" else config.type.label,
+                                config.type.label,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = scheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
@@ -266,8 +282,16 @@ private fun RouterCard(
             }
 
             val detail = when {
+                login?.running == true -> "正在登录并刷新…"
+                login?.success == false -> login.message
+                login?.success == true -> buildString {
+                    append("刚刚登录成功")
+                    if (login.clientCount > 0) append(" · ").append(login.clientCount).append(" 台客户端")
+                }
+
                 !config.enabled -> "扫描时会跳过这台路由器"
-                snapshot == null -> "尚未登录，下一次扫描会尝试连接"
+                !hasCredentials -> "点击卡片填写管理账号后可登录"
+                snapshot == null -> "尚未登录，点击卡片立即登录"
                 reachable -> buildString {
                     append("已登录")
                     snapshot.model?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
@@ -281,20 +305,51 @@ private fun RouterCard(
                 Modifier.fillMaxWidth().padding(top = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    Icons.Outlined.Lan,
-                    contentDescription = null,
-                    tint = if (reachable) Mint.copy(alpha = 0.8f) else scheme.onSurfaceVariant,
-                    modifier = Modifier.size(14.dp),
-                )
+                if (login?.running == true) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = scheme.primary,
+                    )
+                } else {
+                    Icon(
+                        Icons.Outlined.Lan,
+                        contentDescription = null,
+                        tint = accent.copy(alpha = 0.8f),
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
                 Text(
                     " $detail",
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (reachable) Mint.copy(alpha = 0.9f) else scheme.onSurfaceVariant,
-                    maxLines = 1,
+                    color = when {
+                        loginFailed -> scheme.error
+                        reachable || login?.success == true -> Mint.copy(alpha = 0.9f)
+                        else -> scheme.onSurfaceVariant
+                    },
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                IconButton(
+                    onClick = onLogin,
+                    enabled = hasCredentials && login?.running != true,
+                    modifier = Modifier.size(34.dp),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Outlined.Login,
+                        contentDescription = "登录并刷新",
+                        tint = if (hasCredentials) Mint else scheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
+                IconButton(onClick = onOpen, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        Icons.Outlined.Lan,
+                        contentDescription = "查看拓扑节点",
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
                 IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
                     Icon(
                         Icons.Outlined.Edit,
@@ -409,7 +464,7 @@ private fun RouterEditorDialog(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    for (option in listOf(RouterType.AUTO, RouterType.OPENWRT, RouterType.MIKROTIK)) {
+                    for (option in RouterAdapters.selectableTypes) {
                         FilterChip(
                             selected = type == option,
                             onClick = { type = option },
@@ -455,7 +510,7 @@ private fun RouterEditorDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "OpenWrt 使用 LuCI 账号；MikroTik 需要开启 REST（www-ssl）并使用同一管理账号。",
+                    "OpenWrt 使用 LuCI 账号；MikroTik 需开启 REST（www-ssl）；中兴使用光猫/路由的网页管理账号。选「自动识别」会依次尝试所有已注册适配器。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

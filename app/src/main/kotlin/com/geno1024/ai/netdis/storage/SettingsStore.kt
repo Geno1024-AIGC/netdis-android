@@ -21,6 +21,7 @@ class SettingsStore(context: Context) {
             showOffline = prefs.getBoolean(KEY_OFFLINE, defaults.showOffline),
             updateMirrorPrefix = prefs.getString(KEY_MIRROR, null).orEmpty(),
             readArpWithRoot = prefs.getBoolean(KEY_ROOT_ARP, defaults.readArpWithRoot),
+            captureTraffic = prefs.getBoolean(KEY_CAPTURE, defaults.captureTraffic),
         )
     }
 
@@ -33,6 +34,7 @@ class SettingsStore(context: Context) {
             .putBoolean(KEY_OFFLINE, settings.showOffline)
             .putString(KEY_MIRROR, settings.updateMirrorPrefix.trim())
             .putBoolean(KEY_ROOT_ARP, settings.readArpWithRoot)
+            .putBoolean(KEY_CAPTURE, settings.captureTraffic)
             .apply()
     }
 
@@ -45,5 +47,6 @@ class SettingsStore(context: Context) {
         const val KEY_OFFLINE = "showOffline"
         const val KEY_MIRROR = "updateMirrorPrefix"
         const val KEY_ROOT_ARP = "readArpWithRoot"
+        const val KEY_CAPTURE = "captureTraffic"
     }
 }

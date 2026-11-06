@@ -55,17 +55,23 @@ data class HostRecord(
     val online: Boolean = true,
     val sources: Set<HostSource> = emptySet(),
     val routerId: String? = null,
+    /** User-supplied name, kept separately so a later DHCP hostname still shows up. */
+    val alias: String? = null,
+    /** User-supplied free-form note for an otherwise unknown device. */
+    val note: String? = null,
     val extra: Map<String, String> = emptyMap(),
 ) {
     val displayName: String
-        get() = hostname?.takeIf { it.isNotBlank() }
+        get() = alias?.takeIf { it.isNotBlank() }
+            ?: hostname?.takeIf { it.isNotBlank() }
             ?: services.firstOrNull()?.takeIf { it.isNotBlank() }
             ?: vendor?.takeIf { it.isNotBlank() }
             ?: ip
 
     /** Best name we can offer without the address, for labels under a node. */
     val shortName: String
-        get() = hostname?.takeIf { it.isNotBlank() }?.substringBefore('.')
+        get() = alias?.takeIf { it.isNotBlank() }?.substringBefore('.')
+            ?: hostname?.takeIf { it.isNotBlank() }?.substringBefore('.')
             ?: services.firstOrNull()?.takeIf { it.isNotBlank() }?.substringBefore('.')
             ?: vendor?.takeIf { it.isNotBlank() }
             ?: ip.substringAfterLast('.')
@@ -168,6 +174,8 @@ data class AppSettings(
     val updateMirrorPrefix: String = "",
     /** Modern Android blocks the neighbour table; a rooted phone can still read it. */
     val readArpWithRoot: Boolean = false,
+    /** Record app↔router HTTP exchanges so a new firmware can be adapted. */
+    val captureTraffic: Boolean = false,
 )
 
 enum class ScanStage(val label: String) {

@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.InstallMobile
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -41,10 +42,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.geno1024.ai.netdis.model.AppSettings
 import com.geno1024.ai.netdis.model.ThemeMode
+import com.geno1024.ai.netdis.router.TrafficExport
+import com.geno1024.ai.netdis.router.TrafficLog
 import com.geno1024.ai.netdis.storage.CredentialVault
 import com.geno1024.ai.netdis.ui.theme.Mint
 import com.geno1024.ai.netdis.update.ApkInstaller
@@ -67,6 +72,7 @@ fun SettingsScreen(
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: () -> Unit,
     onUpdateMessage: (String) -> Unit,
+    onClearTraffic: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val settings = state.settings
@@ -77,6 +83,8 @@ fun SettingsScreen(
     // The user often leaves for the permission page and comes straight back, so
     // re-read the grant on every resume instead of trusting the first check.
     var canInstall by remember { mutableStateOf(ApkInstaller.canRequestInstall(context)) }
+    var showTraffic by remember { mutableStateOf(false) }
+    var trafficMessage by remember { mutableStateOf<String?>(null) }
     LifecycleResumeEffect(Unit) {
         canInstall = ApkInstaller.canRequestInstall(context)
         onPauseOrDispose { }
@@ -176,6 +184,79 @@ fun SettingsScreen(
                 value = settings.probeTimeoutMs,
                 onChange = { value -> onSettingsChange { it.copy(probeTimeoutMs = value) } },
             )
+        }
+
+        Spacer(Modifier.size(12.dp))
+
+        // Capture is opt-in because it keeps router responses in memory. It is
+        // the only practical way to see what a new firmware rejected without
+        // root or a system packet capture, so the card stays on the settings
+        // page rather than behind a hidden debug screen.
+        GlassCard(padding = 16.dp) {
+            SectionTitle("抓包") {
+                Text(
+                    if (state.trafficCount > 0) "已记录 ${state.trafficCount} 条" else "未记录",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.size(8.dp))
+            SwitchRow(
+                title = "记录应用与路由器的 HTTP 交互",
+                description = "保存登录、读取客户端页面时的请求与响应，便于适配新固件；不抓取其他应用的流量",
+                checked = settings.captureTraffic,
+                onCheckedChange = { value ->
+                    onSettingsChange { it.copy(captureTraffic = value) }
+                },
+            )
+            Text(
+                "只在内存中保留最近 200 条，重启应用即清空。账号、Cookie 与会话令牌会在写入前打码；导出的文件由你决定发送给谁。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Spacer(Modifier.size(8.dp))
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = { showTraffic = true },
+                    enabled = state.trafficCount > 0,
+                ) {
+                    Text("查看")
+                }
+                Button(
+                    onClick = {
+                        val text = TrafficLog.exportText()
+                        val file = TrafficExport.write(context, text)
+                        trafficMessage = TrafficExport.share(context, file)
+                            ?: "已生成抓包文件，请在分享面板中选择保存位置"
+                    },
+                    enabled = state.trafficCount > 0,
+                ) {
+                    Text("导出")
+                }
+                TextButton(
+                    onClick = {
+                        onClearTraffic()
+                        showTraffic = false
+                        trafficMessage = "已清空本机抓包记录"
+                    },
+                    enabled = state.trafficCount > 0,
+                ) {
+                    Text("清空", color = MaterialTheme.colorScheme.error)
+                }
+            }
+            trafficMessage?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
         }
 
         Spacer(Modifier.size(12.dp))
@@ -363,6 +444,45 @@ fun SettingsScreen(
 
         Spacer(Modifier.size(20.dp))
     }
+
+    if (showTraffic) {
+        TrafficViewerDialog(onDismiss = { showTraffic = false })
+    }
+}
+
+@Composable
+private fun TrafficViewerDialog(onDismiss: () -> Unit) {
+    // The full buffer can be several megabytes; the dialog shows the newest
+    // exchanges and points at the export button for the complete file.
+    val preview = remember {
+        runCatching {
+            TrafficLog.exportText(TrafficLog.snapshot().takeLast(20)).take(60_000)
+        }.getOrElse { "抓包预览生成失败：${it.message ?: "未知错误"}" }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("最近的路由器 HTTP 交互") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    "只显示最近 20 条；导出可得到完整内容。敏感字段已打码。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    preview,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        },
+    )
 }
 
 @Composable
