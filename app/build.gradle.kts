@@ -9,7 +9,9 @@ plugins {
 val buildRun: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
     ?: (findProperty("canaryRunNumber") as String?)?.toIntOrNull()
     ?: 1
-val buildCommit: String = System.getenv("GITHUB_SHA") ?: "local"
+val buildCommit: String = System.getenv("GITHUB_SHA")
+    ?: (findProperty("canaryCommit") as String?)
+    ?: "local"
 val buildVersionName = "0.1.$buildRun.${buildCommit.take(8)}"
 
 android {
@@ -99,6 +101,12 @@ android {
 kotlin {
     compilerOptions {
         jvmTarget = JvmTarget.JVM_17
+    }
+}
+
+tasks.register("printVersionName") {
+    doLast {
+        println(buildVersionName)
     }
 }
 
