@@ -201,9 +201,9 @@ class DeviceScanner(private val context: Context) {
                 merge(existing.copy(mac = mac, sources = existing.sources + HostSource.ARP))
             }
         }
-        if (arp.macs.isEmpty() && arpAfter.macs.isEmpty()) {
-            warnings += arpWarning(arp.denied, settings.readArpWithRoot)
-        }
+        // Deferred until the routers have been merged: if they supplied the
+        // MACs, the local table being blocked is no longer worth warning about.
+        val arpEmpty = arp.macs.isEmpty() && arpAfter.macs.isEmpty()
 
         report(ScanStage.SERVICES, 0.56f, "收集 mDNS / SSDP")
         val mdns = mdnsDeferred.await()
@@ -361,6 +361,10 @@ class DeviceScanner(private val context: Context) {
             }
             val classified = withVendor.copy(kind = DeviceClassifier.classify(withVendor))
             live[host.ip] = classified
+        }
+
+        if (arpEmpty && live.values.none { it.mac != null }) {
+            warnings += arpWarning(arp.denied, settings.readArpWithRoot)
         }
 
         coroutineContext.ensureActive()
