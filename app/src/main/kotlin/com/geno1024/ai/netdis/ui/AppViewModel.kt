@@ -10,6 +10,7 @@ import com.geno1024.ai.netdis.model.ScanProgress
 import com.geno1024.ai.netdis.model.ScanSnapshot
 import com.geno1024.ai.netdis.model.ScanStage
 import com.geno1024.ai.netdis.net.DeviceScanner
+import com.geno1024.ai.netdis.storage.CredentialVault
 import com.geno1024.ai.netdis.storage.RouterRepository
 import com.geno1024.ai.netdis.storage.SettingsStore
 import com.geno1024.ai.netdis.storage.SnapshotStore
@@ -21,6 +22,7 @@ import com.geno1024.ai.netdis.update.Mirrors
 import com.geno1024.ai.netdis.update.UpdateResult
 import com.geno1024.ai.netdis.update.Updater
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,6 +49,8 @@ data class AppUiState(
     val scanning: Boolean = false,
     val error: String? = null,
     val update: UpdateUiState = UpdateUiState(),
+    /** `null` until the vault has picked a key source on a worker thread. */
+    val credentialMode: CredentialVault.Mode? = null,
 ) {
     val versionName: String get() = BuildConfig.VERSION_NAME
 }
@@ -54,7 +58,8 @@ data class AppUiState(
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val settingsStore = SettingsStore(application)
-    private val routerRepository = RouterRepository(application)
+    private val credentialVault = CredentialVault(application)
+    private val routerRepository = RouterRepository(application, credentialVault)
     private val snapshotStore = SnapshotStore(application)
     private val scanner = DeviceScanner(application)
 
@@ -68,6 +73,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     private var scanJob: Job? = null
+
+    init {
+        // Key generation can hit the TEE and fail, so never do it on the main
+        // thread. The result also tells the UI whether passwords are protected
+        // by the hardware keystore or by the software fallback.
+        viewModelScope.launch(Dispatchers.IO) {
+            val mode = credentialVault.mode()
+            _state.update { it.copy(credentialMode = mode) }
+        }
+    }
 
     fun startScan() {
         if (scanJob?.isActive == true) return

@@ -63,7 +63,7 @@ object RouterJson {
 
 class RouterRepository(
     context: Context,
-    private val vault: SecretVault = CredentialVault(),
+    private val vault: SecretVault = CredentialVault(context),
 ) {
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

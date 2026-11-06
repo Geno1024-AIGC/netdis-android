@@ -56,6 +56,7 @@ import com.geno1024.ai.netdis.model.RouterConfig
 import com.geno1024.ai.netdis.model.RouterSnapshot
 import com.geno1024.ai.netdis.model.RouterType
 import com.geno1024.ai.netdis.model.TopologyNode
+import com.geno1024.ai.netdis.storage.CredentialVault
 import com.geno1024.ai.netdis.ui.theme.Mint
 
 /**
@@ -156,7 +157,12 @@ fun RoutersScreen(
                 }
                 item {
                     Text(
-                        "密码保存在 Android Keystore 加密的本地存储中，只用于局域网登录，不会上传。",
+                        when (state.credentialMode) {
+                            CredentialVault.Mode.SOFTWARE ->
+                                "本机 Keystore 不可用，密码改用应用私有存储中的软件密钥加密；仍只用于局域网登录，不会上传。"
+                            else ->
+                                "密码保存在 Android Keystore 加密的本地存储中，只用于局域网登录，不会上传。"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),

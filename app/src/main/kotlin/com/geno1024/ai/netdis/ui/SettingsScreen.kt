@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.geno1024.ai.netdis.model.AppSettings
 import com.geno1024.ai.netdis.model.ThemeMode
+import com.geno1024.ai.netdis.storage.CredentialVault
 import com.geno1024.ai.netdis.ui.theme.Mint
 import com.geno1024.ai.netdis.update.ApkInstaller
 import com.geno1024.ai.netdis.update.CanaryManifest
@@ -341,7 +342,12 @@ fun SettingsScreen(
                         modifier = Modifier.size(18.dp),
                     )
                     Text(
-                        "路由器密码由 Android Keystore 生成的密钥加密后保存在本机。扫描只在当前局域网内进行，不会把凭据或设备清单发往服务器。安装更新时始终校验 SHA-256，并通过 Android 的应用签名校验阻止他人替换安装包。",
+                        when (state.credentialMode) {
+                            CredentialVault.Mode.SOFTWARE ->
+                                "本机 Keystore 无法生成密钥，路由器密码改用应用私有存储中的软件密钥加密后保存在本机（无硬件保护）。扫描只在当前局域网内进行，不会把凭据或设备清单发往服务器。安装更新时始终校验 SHA-256，并通过 Android 的应用签名校验阻止他人替换安装包。"
+                            else ->
+                                "路由器密码由 Android Keystore 生成的密钥加密后保存在本机。扫描只在当前局域网内进行，不会把凭据或设备清单发往服务器。安装更新时始终校验 SHA-256，并通过 Android 的应用签名校验阻止他人替换安装包。"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(start = 10.dp),
