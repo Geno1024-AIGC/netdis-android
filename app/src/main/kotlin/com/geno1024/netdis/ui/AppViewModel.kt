@@ -14,6 +14,7 @@ import com.geno1024.netdis.storage.RouterRepository
 import com.geno1024.netdis.storage.SettingsStore
 import com.geno1024.netdis.storage.SnapshotStore
 import com.geno1024.netdis.update.CanaryInfo
+import com.geno1024.netdis.update.CanaryManifest
 import com.geno1024.netdis.update.DownloadResult
 import com.geno1024.netdis.update.Mirror
 import com.geno1024.netdis.update.Mirrors
@@ -169,7 +170,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(update = it.update.copy(checking = true, message = null, file = null))
             }
             val mirrors = mirrors()
-            when (val result = Updater.check(BuildConfig.VERSION_CODE, mirrors)) {
+            val installedRun = CanaryManifest.installedRunNumber(
+                BuildConfig.VERSION_NAME,
+                BuildConfig.VERSION_CODE,
+            )
+            when (val result = Updater.check(installedRun, mirrors)) {
                 is UpdateResult.UpToDate -> _state.update {
                     it.copy(
                         update = it.update.copy(

@@ -54,6 +54,22 @@ object CanaryManifest {
         return if (valid) candidate else FALLBACK_ASSET_NAME
     }
 
+    /**
+     * The canary channel is ordered by CI run number. `versionCode` carries it
+     * on a CI build, but a local build uses the commit count there instead, so
+     * read the env segment of `0.1.<env>.<pack>.<sha8>` first and only fall
+     * back to `versionCode` when the name does not have that shape.
+     */
+    fun installedRunNumber(versionName: String, versionCode: Int): Int {
+        val parts = versionName.trim().split('.')
+        val env = if (parts.size >= 3 && parts[0] == "0" && parts[1] == "1") {
+            parts[2].toIntOrNull()
+        } else {
+            null
+        }
+        return env ?: versionCode
+    }
+
     fun parse(text: String): CanaryInfo? {
         val values = HashMap<String, String>()
         for (rawLine in text.lineSequence()) {

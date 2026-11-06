@@ -60,6 +60,17 @@ class CanaryManifestTest {
     }
 
     @Test
+    fun `reads the run number from the installed version name`() {
+        // CI builds carry the run number in both places.
+        assertEquals(42, CanaryManifest.installedRunNumber("0.1.42.1.deadbeef", 42))
+        // Local builds put the commit count in versionCode; the name wins.
+        assertEquals(3, CanaryManifest.installedRunNumber("0.1.3.1.deadbeef", 417))
+        // A name outside the stamp falls back to versionCode.
+        assertEquals(417, CanaryManifest.installedRunNumber("canary", 417))
+        assertEquals(417, CanaryManifest.installedRunNumber("0.1.x.1.deadbeef", 417))
+    }
+
+    @Test
     fun `builds safe download urls`() {
         assertTrue(
             CanaryManifest.apkUrl("app-release.apk")
