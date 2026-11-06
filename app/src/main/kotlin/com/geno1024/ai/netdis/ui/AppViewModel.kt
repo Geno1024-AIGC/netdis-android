@@ -1,22 +1,27 @@
 package com.geno1024.ai.netdis.ui
 
 import android.app.Application
+import android.content.Intent
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.geno1024.ai.netdis.BuildConfig
 import com.geno1024.ai.netdis.model.AppSettings
 import com.geno1024.ai.netdis.model.HostRecord
+import com.geno1024.ai.netdis.model.PortScanState
 import com.geno1024.ai.netdis.model.RouterConfig
 import com.geno1024.ai.netdis.model.RouterSnapshot
 import com.geno1024.ai.netdis.model.ScanProgress
 import com.geno1024.ai.netdis.model.ScanSnapshot
 import com.geno1024.ai.netdis.model.ScanStage
 import com.geno1024.ai.netdis.net.DeviceScanner
+import com.geno1024.ai.netdis.net.PortScanBus
 import com.geno1024.ai.netdis.router.RouterParsing
 import com.geno1024.ai.netdis.router.RouterScanner
-import com.geno1024.ai.netdis.router.TrafficLog
+import com.geno1024.ai.netdis.scan.PortScanService
 import com.geno1024.ai.netdis.storage.CredentialVault
 import com.geno1024.ai.netdis.storage.DeviceNotesStore
+import com.geno1024.ai.netdis.storage.RouterMatch
 import com.geno1024.ai.netdis.storage.RouterRepository
 import com.geno1024.ai.netdis.storage.SettingsStore
 import com.geno1024.ai.netdis.storage.SnapshotStore
@@ -34,6 +39,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
@@ -68,7 +74,7 @@ data class AppUiState(
     /** `null` until the vault has picked a key source on a worker thread. */
     val credentialMode: CredentialVault.Mode? = null,
     val routerLogins: Map<String, RouterLoginUiState> = emptyMap(),
-    val trafficCount: Int = 0,
+    val portScan: PortScanState? = null,
 ) {
     val versionName: String get() = BuildConfig.VERSION_NAME
 }
@@ -90,23 +96,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             settings = initialSettings,
             routers = initialRouters,
             snapshot = snapshotStore.load()?.let { annotate(it, initialRouters) },
-            trafficCount = TrafficLog.count(),
         ),
     )
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     private var scanJob: Job? = null
+    private var appliedPortScanId: Long? = null
 
     init {
-        // Capture is opt-in and lives in a process-wide buffer because the HTTP
-        // client is a singleton shared by every adapter.
-        TrafficLog.enabled = initialSettings.captureTraffic
         // Key generation can hit the TEE and fail, so never do it on the main
         // thread. The result also tells the UI whether passwords are protected
         // by the hardware keystore or by the software fallback.
         viewModelScope.launch(Dispatchers.IO) {
             val mode = credentialVault.mode()
             _state.update { it.copy(credentialMode = mode) }
+        }
+        viewModelScope.launch {
+            PortScanBus.state.collect { scan ->
+                _state.update { it.copy(portScan = scan) }
+                if (scan != null && scan.finished && scan.id != appliedPortScanId) {
+                    appliedPortScanId = scan.id
+                    if (scan.openPorts.isNotEmpty()) applyOpenPorts(scan.ip, scan.openPorts)
+                }
+            }
         }
     }
 
@@ -125,13 +137,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val scanned = scanner.scan(current.settings, current.routers) { progress ->
                     _state.update { it.copy(progress = progress) }
                 }
-                val snapshot = annotate(scanned, current.routers)
+                val configs = learnRouterMacs(_state.value.routers, scanned.routers)
+                val snapshot = annotate(scanned, configs)
                 snapshotStore.save(snapshot)
                 _state.update {
                     it.copy(
                         snapshot = snapshot,
                         scanning = false,
-                        trafficCount = TrafficLog.count(),
                         progress = ScanProgress(
                             stage = ScanStage.DONE,
                             fraction = 1f,
@@ -164,6 +176,47 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelScan() {
         scanJob?.cancel()
         scanJob = null
+    }
+
+    /**
+     * Starts a full 1–65535 TCP scan in a foreground service, so progress stays
+     * visible in the notification shade even when the activity is backgrounded.
+     */
+    fun startPortScan(host: HostRecord) {
+        if (PortScanBus.isRunning()) return
+        val context = getApplication<Application>()
+        val id = System.currentTimeMillis()
+        PortScanBus.publish(
+            PortScanState(
+                id = id,
+                ip = host.ip,
+                label = host.displayName,
+                running = true,
+                total = 65535,
+            ),
+        )
+        ContextCompat.startForegroundService(
+            context,
+            Intent(context, PortScanService::class.java)
+                .setAction(PortScanService.ACTION_START)
+                .putExtra(PortScanService.EXTRA_ID, id)
+                .putExtra(PortScanService.EXTRA_IP, host.ip)
+                .putExtra(PortScanService.EXTRA_LABEL, host.displayName),
+        )
+    }
+
+    fun cancelPortScan() {
+        val context = getApplication<Application>()
+        context.startService(
+            Intent(context, PortScanService::class.java).setAction(PortScanService.ACTION_CANCEL),
+        )
+        PortScanBus.update { it.copy(running = false, finished = true, cancelled = true) }
+    }
+
+    /** Removes the finished scan card/notification state. */
+    fun dismissPortScan() {
+        if (PortScanBus.state.value?.running == true) return
+        PortScanBus.publish(null)
     }
 
     fun clearError() {
@@ -203,8 +256,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
         val updated = transform(_state.value.settings)
         settingsStore.save(updated)
-        TrafficLog.enabled = updated.captureTraffic
-        _state.update { it.copy(settings = updated, trafficCount = TrafficLog.count()) }
+        _state.update { it.copy(settings = updated) }
     }
 
     /**
@@ -232,6 +284,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             if (result.reachable) {
                 val now = System.currentTimeMillis()
+                val configs = learnRouterMacs(_state.value.routers, listOf(result))
                 val current = _state.value.snapshot
                 val base = current ?: ScanSnapshot(
                     startedAt = now,
@@ -244,13 +297,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val hosts = RouterParsing.mergeHosts(base.hosts + result.clients)
                 val rebuilt = annotate(
                     base.copy(routers = routers, hosts = hosts, finishedAt = now),
-                    _state.value.routers,
+                    configs,
                 )
                 snapshotStore.save(rebuilt)
                 _state.update {
                     it.copy(
                         snapshot = rebuilt,
-                        trafficCount = TrafficLog.count(),
                         routerLogins = it.routerLogins + (
                             configId to RouterLoginUiState(
                                 success = true,
@@ -271,7 +323,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     ),
                 )
                 _state.update {
-                    it.copy(error = result.message ?: "登录失败", trafficCount = TrafficLog.count())
+                    it.copy(error = result.message ?: "登录失败")
                 }
             }
         }
@@ -285,11 +337,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteDeviceNote(host: HostRecord) {
         deviceNotes.remove(host)
         refreshNotes()
-    }
-
-    fun clearTraffic() {
-        TrafficLog.clear()
-        _state.update { it.copy(trafficCount = 0) }
     }
 
     private fun refreshNotes() {
@@ -321,8 +368,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    /**
+     * A successful login can reveal the router's LAN MAC. Store it on the
+     * configuration so the next scan still finds this router after DHCP moves
+     * it to another address.
+     */
+    private fun learnRouterMacs(
+        configs: List<RouterConfig>,
+        snapshots: List<RouterSnapshot>,
+    ): List<RouterConfig> {
+        if (snapshots.isEmpty()) return configs
+        var changed = false
+        val updated = configs.map { config ->
+            val snapshot = snapshots.firstOrNull { it.sameRouterAs(config) } ?: return@map config
+            val mac = RouterMatch.normalizeMac(snapshot.mac) ?: return@map config
+            if (RouterMatch.normalizeMac(config.mac) == mac) return@map config
+            changed = true
+            config.copy(mac = mac)
+        }
+        if (changed) {
+            routerRepository.save(updated)
+            _state.update { it.copy(routers = updated) }
+        }
+        return updated
+    }
+
+    private fun applyOpenPorts(ip: String, ports: List<Int>) {
+        val current = _state.value.snapshot ?: return
+        var changed = false
+        fun merge(host: HostRecord): HostRecord {
+            val merged = (host.openPorts + ports).distinct().sorted()
+            if (merged == host.openPorts) return host
+            changed = true
+            return host.copy(openPorts = merged)
+        }
+        val hosts = current.hosts.map { merge(it) }
+        val routers = current.routers.map { router ->
+            router.copy(clients = router.clients.map { merge(it) })
+        }
+        if (!changed) return
+        val rebuilt = annotate(current.copy(hosts = hosts, routers = routers), _state.value.routers)
+        snapshotStore.save(rebuilt)
+        _state.update { it.copy(snapshot = rebuilt) }
+    }
+
     private fun RouterSnapshot.sameRouterAs(config: RouterConfig): Boolean =
-        configId == config.id || (configId == null && host == config.host)
+        configId == config.id || RouterMatch.find(listOf(config), host, mac) != null
 
     fun checkUpdate() {
         if (_state.value.update.checking || _state.value.update.downloading) return

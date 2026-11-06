@@ -1,7 +1,6 @@
 package com.geno1024.ai.netdis.ui
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,16 +8,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Login
 import androidx.compose.material.icons.outlined.Add
@@ -26,68 +21,48 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Lan
 import androidx.compose.material.icons.outlined.Router
-import androidx.compose.material.icons.outlined.Visibility
-import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.geno1024.ai.netdis.model.NodeKind
 import com.geno1024.ai.netdis.model.RouterConfig
 import com.geno1024.ai.netdis.model.RouterSnapshot
 import com.geno1024.ai.netdis.model.TopologyNode
-import com.geno1024.ai.netdis.router.RouterAdapters
 import com.geno1024.ai.netdis.storage.CredentialVault
 import com.geno1024.ai.netdis.ui.theme.Mint
 
 /**
- * Credentials live here, not in the topology. Each saved router keeps its own
- * enable switch so a broken or foreign device can stay configured without
- * slowing every scan down.
+ * The router list. Editing happens on [RouterEditorScreen], so this screen only
+ * has to answer "which routers are configured and are they logged in".
  */
 @Composable
 fun RoutersScreen(
     state: AppUiState,
-    onSave: (RouterConfig) -> Unit,
+    onAdd: () -> Unit,
+    onEdit: (RouterConfig) -> Unit,
     onDelete: (String) -> Unit,
     onToggle: (String, Boolean) -> Unit,
     onLogin: (String) -> Unit,
     onNodeClick: (TopologyNode) -> Unit,
     modifier: Modifier = Modifier,
-    initialHost: String? = null,
-    onInitialHostConsumed: () -> Unit = {},
 ) {
-    var draft by remember { mutableStateOf<RouterConfig?>(null) }
     var pendingDelete by remember { mutableStateOf<RouterConfig?>(null) }
-
-    LaunchedEffect(initialHost) {
-        val host = initialHost?.trim().orEmpty()
-        if (host.isNotEmpty()) {
-            draft = RouterConfig(id = "", label = "", host = host)
-            onInitialHostConsumed()
-        }
-    }
 
     Column(
         modifier
@@ -110,7 +85,7 @@ fun RoutersScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            FilledTonalButton(onClick = { draft = RouterConfig(id = "", label = "", host = "") }) {
+            FilledTonalButton(onClick = onAdd) {
                 Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("添加")
@@ -122,12 +97,9 @@ fun RoutersScreen(
                 EmptyState(
                     icon = Icons.Outlined.Router,
                     title = "还没有路由器账号",
-                    body = "主路由即使不登录也会出现在拓扑里。登录 OpenWrt 或 MikroTik 后，才能读到它下面的设备与多级上联关系。",
+                    body = "主路由即使不登录也会出现在拓扑里。登录 OpenWrt、MikroTik、中兴或华为后，才能读到它下面的设备与多级上联关系。",
                     action = {
-                        FilledTonalButton(
-                            onClick = { draft = RouterConfig(id = "", label = "", host = "") },
-                            modifier = Modifier.padding(top = 8.dp),
-                        ) {
+                        FilledTonalButton(onClick = onAdd, modifier = Modifier.padding(top = 8.dp)) {
                             Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
                             Text("添加第一台路由器")
@@ -143,19 +115,24 @@ fun RoutersScreen(
             ) {
                 items(state.routers, key = { it.id }) { config ->
                     val snapshot = state.snapshot?.routers?.firstOrNull {
-                        it.configId == config.id || it.host == config.host
+                        it.configId == config.id ||
+                            it.host == config.host ||
+                            (config.mac != null && it.mac == config.mac)
                     }
                     RouterCard(
                         config = config,
                         snapshot = snapshot,
                         login = state.routerLogins[config.id],
-                        onEdit = { draft = config },
+                        onEdit = { onEdit(config) },
                         onDelete = { pendingDelete = config },
                         onToggle = { onToggle(config.id, it) },
                         onLogin = { onLogin(config.id) },
                         onOpen = {
                             state.snapshot?.graph?.nodes
-                                ?.firstOrNull { node -> node.kind == NodeKind.ROUTER && node.routerId == config.id }
+                                ?.firstOrNull { node ->
+                                    node.kind == NodeKind.ROUTER &&
+                                        (node.routerId == config.id || node.ip == config.host)
+                                }
                                 ?.let(onNodeClick)
                         },
                     )
@@ -175,17 +152,6 @@ fun RoutersScreen(
                 }
             }
         }
-    }
-
-    draft?.let { editing ->
-        RouterEditorDialog(
-            initial = editing,
-            onDismiss = { draft = null },
-            onSave = {
-                onSave(it)
-                draft = null
-            },
-        )
     }
 
     pendingDelete?.let { target ->
@@ -376,167 +342,14 @@ private fun RouterCard(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun RouterEditorDialog(
-    initial: RouterConfig,
-    onDismiss: () -> Unit,
-    onSave: (RouterConfig) -> Unit,
-) {
-    val scheme = initial.scheme
-    var label by remember { mutableStateOf(initial.label) }
-    var host by remember { mutableStateOf(initial.host) }
-    var selectedScheme by remember { mutableStateOf(scheme) }
-    var portText by remember { mutableStateOf(if (initial.port > 0) initial.port.toString() else "") }
-    var type by remember { mutableStateOf(initial.type) }
-    var username by remember { mutableStateOf(initial.username) }
-    var password by remember { mutableStateOf(initial.password) }
-    var note by remember { mutableStateOf(initial.note) }
-    var passwordVisible by remember { mutableStateOf(false) }
-
-    val port = portText.toIntOrNull()
-    val hostValid = host.trim().isNotEmpty()
-    val portValid = portText.isBlank() || (port != null && port in 1..65535)
-    val canSave = hostValid && portValid
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (initial.id.isBlank()) "添加路由器" else "编辑路由器") },
-        text = {
-            Column(
-                Modifier
-                    .heightIn(max = 480.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = label,
-                    onValueChange = { label = it },
-                    label = { Text("名称（可选）") },
-                    placeholder = { Text("客厅主路由") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = host,
-                    onValueChange = { host = it },
-                    label = { Text("地址") },
-                    placeholder = { Text("192.168.1.1") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text("管理协议", style = MaterialTheme.typography.labelMedium)
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    for (option in listOf("http", "https")) {
-                        FilterChip(
-                            selected = selectedScheme == option,
-                            onClick = { selectedScheme = option },
-                            label = { Text(option.uppercase()) },
-                            shape = CircleShape,
-                        )
-                    }
-                }
-                OutlinedTextField(
-                    value = portText,
-                    onValueChange = { text ->
-                        portText = text.filter { it.isDigit() }.take(5)
-                    },
-                    label = { Text("端口（留空自动）") },
-                    placeholder = { Text("80 / 443 / 8080") },
-                    singleLine = true,
-                    isError = !portValid,
-                    supportingText = if (!portValid) {
-                        { Text("端口需在 1–65535 之间") }
-                    } else {
-                        null
-                    },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text("识别方式", style = MaterialTheme.typography.labelMedium)
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    for (option in RouterAdapters.selectableTypes) {
-                        FilterChip(
-                            selected = type == option,
-                            onClick = { type = option },
-                            label = { Text(option.label) },
-                            shape = CircleShape,
-                        )
-                    }
-                }
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("用户名") },
-                    placeholder = { Text("root / admin") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("密码") },
-                    singleLine = true,
-                    visualTransformation = if (passwordVisible) {
-                        VisualTransformation.None
-                    } else {
-                        PasswordVisualTransformation()
-                    },
-                    trailingIcon = {
-                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                            Icon(
-                                if (passwordVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                                contentDescription = if (passwordVisible) "隐藏密码" else "显示密码",
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    label = { Text("备注（可选）") },
-                    placeholder = { Text("例如：弱电箱里的二级路由") },
-                    maxLines = 3,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            if (config.mac != null) {
                 Text(
-                    "OpenWrt 使用 LuCI 账号；MikroTik 需开启 REST（www-ssl）；中兴使用光猫/路由的网页管理账号。选「自动识别」会依次尝试所有已注册适配器。",
+                    "MAC ${config.mac}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = scheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
                 )
             }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = canSave,
-                onClick = {
-                    onSave(
-                        initial.copy(
-                            label = label.trim(),
-                            host = host.trim(),
-                            scheme = selectedScheme,
-                            port = port ?: 0,
-                            type = type,
-                            username = username.trim(),
-                            password = password,
-                            note = note.trim(),
-                        ),
-                    )
-                },
-            ) { Text("保存") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        },
-    )
+        }
+    }
 }

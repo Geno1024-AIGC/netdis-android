@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Clear
 import androidx.compose.material.icons.outlined.DevicesOther
+import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Button
@@ -62,6 +63,7 @@ private enum class DeviceFilter(val label: String) {
 fun DevicesScreen(
     state: AppUiState,
     onNodeClick: (TopologyNode) -> Unit,
+    onEditCredentials: (RouterCredentialTarget) -> Unit,
     onScan: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -192,7 +194,11 @@ fun DevicesScreen(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 14.dp),
             ) {
                 items(visible, key = { it.id }) { node ->
-                    NodeRow(node = node, onClick = { onNodeClick(node) })
+                    NodeRow(
+                        node = node,
+                        onClick = { onNodeClick(node) },
+                        onEditCredentials = onEditCredentials,
+                    )
                 }
             }
         }
@@ -200,7 +206,11 @@ fun DevicesScreen(
 }
 
 @Composable
-private fun NodeRow(node: TopologyNode, onClick: () -> Unit) {
+private fun NodeRow(
+    node: TopologyNode,
+    onClick: () -> Unit,
+    onEditCredentials: (RouterCredentialTarget) -> Unit,
+) {
     val scheme = MaterialTheme.colorScheme
     val tint: Color
     val icon: androidx.compose.ui.graphics.vector.ImageVector
@@ -255,6 +265,20 @@ private fun NodeRow(node: TopologyNode, onClick: () -> Unit) {
                         color = if (reachable) Mint else scheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     )
+                }
+                val target = routerCredentialTarget(node)
+                if (target != null) {
+                    IconButton(
+                        onClick = { onEditCredentials(target) },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.LockOpen,
+                            contentDescription = "编辑路由器凭据",
+                            tint = scheme.onSurfaceVariant,
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
                 }
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {

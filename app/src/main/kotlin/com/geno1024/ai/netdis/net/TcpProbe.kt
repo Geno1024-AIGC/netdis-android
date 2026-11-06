@@ -1,10 +1,16 @@
 package com.geno1024.ai.netdis.net
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * TCP connect probing. An accepted connection is proof that a host is alive and
@@ -44,6 +50,60 @@ object TcpProbe {
         }
         found
     }
+
+    /**
+     * Scans the complete 1–65535 TCP range. A full range is 65k short connects,
+     * so this is intentionally limited to a bounded pool and reported through
+     * [onProgress] about every 64 ports. Cancelling the calling coroutine stops
+     * new connects; in-flight sockets finish within one timeout.
+     */
+    suspend fun scanAllPorts(
+        ip: String,
+        concurrency: Int = 256,
+        connectTimeoutMs: Int = 250,
+        onProgress: (scanned: Int, openPorts: List<Int>) -> Unit = { _, _ -> },
+    ): List<Int> = withContext(Dispatchers.IO) {
+        coroutineScope {
+            val openPorts = Collections.synchronizedList(ArrayList<Int>())
+            val scanned = AtomicInteger(0)
+            val reported = AtomicInteger(0)
+            val nextPort = AtomicInteger(FIRST_PORT)
+            val total = LAST_PORT
+            val workers = (1..concurrency.coerceIn(1, MAX_CONCURRENCY)).map {
+                launch {
+                    while (true) {
+                        if (!isActive) break
+                        val port = nextPort.getAndIncrement()
+                        if (port > total) break
+                        if (connect(ip, port, connectTimeoutMs)) openPorts += port
+                        val done = scanned.incrementAndGet()
+                        if (done == total || done % PROGRESS_STEP == 0) {
+                            // Workers finish out of order. Keep the published
+                            // count monotonic and call back from one thread so
+                            // the UI/notification never jumps backwards.
+                            synchronized(reported) {
+                                if (done > reported.get()) {
+                                    reported.set(done)
+                                    onProgress(done, snapshot(openPorts))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            workers.joinAll()
+            val result = snapshot(openPorts)
+            onProgress(total, result)
+            result
+        }
+    }
+
+    private fun snapshot(ports: List<Int>): List<Int> = synchronized(ports) { ports.sorted() }
+
+    private const val FIRST_PORT = 1
+    private const val LAST_PORT = 65535
+    private const val PROGRESS_STEP = 64
+    private const val MAX_CONCURRENCY = 512
 
     private fun connect(ip: String, port: Int, timeoutMs: Int): Boolean = try {
         Socket().use { socket ->

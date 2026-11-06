@@ -16,6 +16,7 @@ import androidx.compose.material.icons.automirrored.outlined.Login
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -24,6 +25,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -45,6 +47,7 @@ import com.geno1024.ai.netdis.model.HostRecord
 import com.geno1024.ai.netdis.model.HostSource
 import com.geno1024.ai.netdis.model.LinkKind
 import com.geno1024.ai.netdis.model.NodeKind
+import com.geno1024.ai.netdis.model.PortScanState
 import com.geno1024.ai.netdis.model.RouterConfig
 import com.geno1024.ai.netdis.model.RouterType
 import com.geno1024.ai.netdis.model.ScanSnapshot
@@ -63,12 +66,17 @@ fun NodeDetailSheet(
     node: TopologyNode,
     snapshot: ScanSnapshot?,
     onDismiss: () -> Unit,
-    onAddRouter: (String) -> Unit,
+    credentialTarget: RouterCredentialTarget? = null,
+    onEditCredentials: (RouterCredentialTarget) -> Unit = {},
     onRescan: () -> Unit,
     onSaveNote: (HostRecord, String, String) -> Unit = { _, _, _ -> },
     onDeleteNote: (HostRecord) -> Unit = {},
     routerLogin: RouterLoginUiState? = null,
     onLoginRouter: (RouterConfig) -> Unit = {},
+    portScan: PortScanState? = null,
+    onStartPortScan: (HostRecord) -> Unit = {},
+    onCancelPortScan: () -> Unit = {},
+    onDismissPortScan: () -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
@@ -119,15 +127,22 @@ fun NodeDetailSheet(
                 NodeKind.ROUTER -> RouterDetails(
                     node = node,
                     snapshot = snapshot,
-                    onAddRouter = onAddRouter,
+                    credentialTarget = credentialTarget,
+                    onEditCredentials = onEditCredentials,
                     login = routerLogin,
                     onLogin = onLoginRouter,
                 )
 
                 NodeKind.DEVICE -> DeviceDetails(
                     node = node,
+                    credentialTarget = credentialTarget,
+                    onEditCredentials = onEditCredentials,
                     onSaveNote = onSaveNote,
                     onDeleteNote = onDeleteNote,
+                    portScan = portScan,
+                    onStartPortScan = onStartPortScan,
+                    onCancelPortScan = onCancelPortScan,
+                    onDismissPortScan = onDismissPortScan,
                 )
             }
 
@@ -177,12 +192,13 @@ private fun StatusDot(online: Boolean) {
 private fun RouterDetails(
     node: TopologyNode,
     snapshot: ScanSnapshot?,
-    onAddRouter: (String) -> Unit,
+    credentialTarget: RouterCredentialTarget?,
+    onEditCredentials: (RouterCredentialTarget) -> Unit,
     login: RouterLoginUiState?,
     onLogin: (RouterConfig) -> Unit,
 ) {
     val router = node.snapshot
-    val config = node.router
+    val config = credentialTarget?.config ?: node.router
     val hasCredentials = config != null &&
         (config.username.isNotBlank() || config.password.isNotBlank())
     InfoRow("地址", node.ip)
@@ -206,20 +222,22 @@ private fun RouterDetails(
     InfoRow("登录账号", config?.username)
     InfoRow("备注", router?.message ?: config?.note)
 
-    if (config != null) {
+    if (credentialTarget != null) {
         Surface(
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
             shape = MaterialTheme.shapes.medium,
             color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f),
         ) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("应用内登录", style = MaterialTheme.typography.titleSmall)
+                Text("路由器凭据", style = MaterialTheme.typography.titleSmall)
                 Text(
                     login?.message?.takeIf { it.isNotBlank() }
                         ?: if (hasCredentials) {
                             "使用已保存的账号登录，拉取客户端与 WAN 上联并立即更新拓扑。"
+                        } else if (config == null) {
+                            "这台路由器还没有保存账号。填写后会按 MAC 绑定，地址变化也能自动找回。"
                         } else {
-                            "还没有保存账号。先编辑路由器填入管理账号，之后点击卡片即可登录。"
+                            "还没有保存账号。先编辑路由器填入管理账号，之后即可登录。"
                         },
                     style = MaterialTheme.typography.bodySmall,
                     color = when (login?.success) {
@@ -230,7 +248,7 @@ private fun RouterDetails(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { onLogin(config) },
+                        onClick = { config?.let(onLogin) },
                         enabled = hasCredentials && login?.running != true,
                     ) {
                         if (login?.running == true) {
@@ -245,38 +263,11 @@ private fun RouterDetails(
                         Spacer(Modifier.width(6.dp))
                         Text(if (login?.running == true) "登录中…" else "登录并刷新")
                     }
-                    if (!hasCredentials) {
-                        TextButton(onClick = { node.ip?.let(onAddRouter) }) {
-                            Text("填写账号")
-                        }
+                    TextButton(onClick = { onEditCredentials(credentialTarget) }) {
+                        Icon(Icons.Outlined.LockOpen, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text(if (config == null) "填写账号" else "编辑凭据")
                     }
-                }
-            }
-        }
-    }
-
-    val needsCredentials = router != null && !router.reachable
-    if (needsCredentials && !hasCredentials) {
-        Surface(
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-        ) {
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "这台路由器还没有登录凭据",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-                Text(
-                    "添加 OpenWrt、MikroTik 或中兴的管理账号后，可以读取 DHCP 客户端、无线关联和 WAN 上联，下级路由会被自动挂到它下面。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-                Button(onClick = { node.ip?.let(onAddRouter) }) {
-                    Icon(Icons.Outlined.LockOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("添加登录凭据")
                 }
             }
         }
@@ -324,12 +315,20 @@ private fun RouterDetails(
 @Composable
 private fun DeviceDetails(
     node: TopologyNode,
+    credentialTarget: RouterCredentialTarget?,
+    onEditCredentials: (RouterCredentialTarget) -> Unit,
     onSaveNote: (HostRecord, String, String) -> Unit,
     onDeleteNote: (HostRecord) -> Unit,
+    portScan: PortScanState?,
+    onStartPortScan: (HostRecord) -> Unit,
+    onCancelPortScan: () -> Unit,
+    onDismissPortScan: () -> Unit,
 ) {
     val host = node.host ?: return
     var editing by remember(host.ip, host.mac) { mutableStateOf(false) }
     val hasNote = !host.alias.isNullOrBlank() || !host.note.isNullOrBlank()
+    val thisScan = portScan?.takeIf { it.ip == host.ip }
+    val otherScanRunning = portScan?.running == true && portScan.ip != host.ip
 
     InfoRow("IP 地址", host.ip)
     InfoRow("MAC", host.mac)
@@ -394,6 +393,47 @@ private fun DeviceDetails(
         }
     }
 
+    PortScanCard(
+        host = host,
+        scan = thisScan,
+        otherScanRunning = otherScanRunning,
+        onStart = { onStartPortScan(host) },
+        onCancel = onCancelPortScan,
+        onDismiss = onDismissPortScan,
+    )
+
+    if (credentialTarget != null) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f),
+        ) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("上级路由器", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "${credentialTarget.label} 负责管理这台设备。读取更多客户端、修正登录凭据或重新登录时，可以直接前往它的编辑页。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = { onEditCredentials(credentialTarget) }) {
+                    Icon(
+                        Icons.Outlined.LockOpen,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        if (credentialTarget.config == null) {
+                            "添加上级路由凭据"
+                        } else {
+                            "编辑上级路由凭据"
+                        },
+                    )
+                }
+            }
+        }
+    }
+
     if (editing) {
         DeviceNoteDialog(
             host = host,
@@ -419,6 +459,101 @@ private fun DeviceDetails(
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(12.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun PortScanCard(
+    host: HostRecord,
+    scan: PortScanState?,
+    otherScanRunning: Boolean,
+    onStart: () -> Unit,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("全端口扫描", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "依次探测 1–65535 全部 TCP 端口，通常需要几分钟到十几分钟。" +
+                    "建议连接电源后开始；切到后台也会继续，并在通知栏显示同样的进度。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            if (scan == null) {
+                if (otherScanRunning) {
+                    Text(
+                        "另一台设备的全端口扫描正在进行，完成或取消后才能开始新的扫描。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Button(onClick = onStart, enabled = !otherScanRunning) {
+                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("扫描全部端口")
+                }
+            } else {
+                LinearProgressIndicator(
+                    progress = { scan.fraction },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    when {
+                        scan.running -> "正在扫描 ${scan.scanned}/${scan.total} 个端口…"
+                        scan.cancelled -> "扫描已取消，已扫描 ${scan.scanned}/${scan.total} 个端口"
+                        scan.message?.contains("失败") == true ->
+                            "扫描失败，已扫描 ${scan.scanned}/${scan.total} 个端口"
+                        else -> "扫描完成，共 ${scan.total} 个端口"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    if (scan.openPorts.isEmpty()) {
+                        if (scan.running) "已发现 0 个开放端口" else "没有发现开放端口"
+                    } else {
+                        "开放端口（${scan.openPorts.size}）：" +
+                            scan.openPorts.take(40).joinToString("，") +
+                            if (scan.openPorts.size > 40) " …" else ""
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                scan.message?.takeIf { it.isNotBlank() }?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (scan.running) {
+                        TextButton(onClick = onCancel) {
+                            Text("取消扫描", color = MaterialTheme.colorScheme.error)
+                        }
+                    } else {
+                        TextButton(onClick = onDismiss) { Text("收起结果") }
+                        Button(onClick = onStart, enabled = !otherScanRunning) {
+                            Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("重新扫描")
+                        }
+                    }
+                }
+                if (!host.online) {
+                    Text(
+                        "这台设备当前显示为离线，扫描可能得到全部超时的结果。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
         }
     }
 }

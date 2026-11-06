@@ -1,5 +1,6 @@
 package com.geno1024.ai.netdis.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -29,6 +30,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.geno1024.ai.netdis.model.NodeKind
+import com.geno1024.ai.netdis.model.RouterConfig
 import com.geno1024.ai.netdis.model.TopologyNode
 import com.geno1024.ai.netdis.ui.theme.NetDisTheme
 import com.geno1024.ai.netdis.ui.topology.TopologyScreen
@@ -44,6 +47,11 @@ private enum class Destination(val label: String, val icon: ImageVector) {
  * One activity, four destinations, no navigation library. The selected node is
  * transient UI state; everything durable (routers, settings, last scan) comes
  * from the view model.
+ *
+ * Adding and editing a router is a full page rather than a dialog or a tab. It
+ * is opened from the router list or from any node's credential action, which is
+ * why [editingRouter] temporarily replaces the destination content and hides
+ * the bottom bar.
  */
 @Composable
 fun NetDisApp(viewModel: AppViewModel = viewModel()) {
@@ -51,8 +59,17 @@ fun NetDisApp(viewModel: AppViewModel = viewModel()) {
     var tabName by rememberSaveable { mutableStateOf(Destination.TOPOLOGY.name) }
     val tab = Destination.entries.firstOrNull { it.name == tabName } ?: Destination.TOPOLOGY
     var selectedNode by remember { mutableStateOf<TopologyNode?>(null) }
-    var initialRouterHost by rememberSaveable { mutableStateOf<String?>(null) }
+    var editingRouter by remember { mutableStateOf<RouterConfig?>(null) }
     val snackbar = remember { SnackbarHostState() }
+
+    // The editor replaces the current tab rather than pushing a destination, so
+    // wire the system back gesture to the same action as the page's arrow.
+    BackHandler(enabled = editingRouter != null) { editingRouter = null }
+
+    fun openCredentials(target: RouterCredentialTarget) {
+        selectedNode = null
+        editingRouter = target.toConfig()
+    }
 
     NetDisTheme(mode = state.settings.theme) {
         LaunchedEffect(state.error, tabName) {
@@ -69,62 +86,77 @@ fun NetDisApp(viewModel: AppViewModel = viewModel()) {
                 containerColor = Color.Transparent,
                 snackbarHost = { SnackbarHost(snackbar) },
                 bottomBar = {
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                        tonalElevation = 4.dp,
-                    ) {
-                        for (destination in Destination.entries) {
-                            NavigationBarItem(
-                                selected = tab == destination,
-                                onClick = { tabName = destination.name },
-                                icon = { Icon(destination.icon, contentDescription = null) },
-                                label = { Text(destination.label) },
-                            )
+                    if (editingRouter == null) {
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                            tonalElevation = 4.dp,
+                        ) {
+                            for (destination in Destination.entries) {
+                                NavigationBarItem(
+                                    selected = tab == destination,
+                                    onClick = { tabName = destination.name },
+                                    icon = { Icon(destination.icon, contentDescription = null) },
+                                    label = { Text(destination.label) },
+                                )
+                            }
                         }
                     }
                 },
             ) { inner ->
                 Box(Modifier.fillMaxSize().padding(inner)) {
-                    when (tab) {
-                        Destination.TOPOLOGY -> TopologyScreen(
-                            state = state,
-                            onScan = {
-                                selectedNode = null
-                                viewModel.startScan()
+                    val editor = editingRouter
+                    if (editor != null) {
+                        RouterEditorScreen(
+                            initial = editor,
+                            onSave = { config ->
+                                viewModel.saveRouter(config)
+                                editingRouter = null
                             },
-                            onCancel = viewModel::cancelScan,
-                            onDismissError = viewModel::clearError,
-                            onNodeClick = { selectedNode = it },
+                            onBack = { editingRouter = null },
                         )
+                    } else {
+                        when (tab) {
+                            Destination.TOPOLOGY -> TopologyScreen(
+                                state = state,
+                                onScan = {
+                                    selectedNode = null
+                                    viewModel.startScan()
+                                },
+                                onCancel = viewModel::cancelScan,
+                                onDismissError = viewModel::clearError,
+                                onNodeClick = { selectedNode = it },
+                            )
 
-                        Destination.DEVICES -> DevicesScreen(
-                            state = state,
-                            onNodeClick = { selectedNode = it },
-                            onScan = {
-                                selectedNode = null
-                                viewModel.startScan()
-                            },
-                        )
+                            Destination.DEVICES -> DevicesScreen(
+                                state = state,
+                                onNodeClick = { selectedNode = it },
+                                onEditCredentials = ::openCredentials,
+                                onScan = {
+                                    selectedNode = null
+                                    viewModel.startScan()
+                                },
+                            )
 
-                        Destination.ROUTERS -> RoutersScreen(
-                            state = state,
-                            onSave = viewModel::saveRouter,
-                            onDelete = viewModel::deleteRouter,
-                            onToggle = viewModel::setRouterEnabled,
-                            onLogin = viewModel::loginRouter,
-                            onNodeClick = { selectedNode = it },
-                            initialHost = initialRouterHost,
-                            onInitialHostConsumed = { initialRouterHost = null },
-                        )
+                            Destination.ROUTERS -> RoutersScreen(
+                                state = state,
+                                onAdd = {
+                                    editingRouter = RouterConfig(id = "", label = "", host = "")
+                                },
+                                onEdit = { editingRouter = it },
+                                onDelete = viewModel::deleteRouter,
+                                onToggle = viewModel::setRouterEnabled,
+                                onLogin = viewModel::loginRouter,
+                                onNodeClick = { selectedNode = it },
+                            )
 
-                        Destination.SETTINGS -> SettingsScreen(
-                            state = state,
-                            onSettingsChange = viewModel::updateSettings,
-                            onCheckUpdate = viewModel::checkUpdate,
-                            onDownloadUpdate = viewModel::downloadUpdate,
-                            onUpdateMessage = viewModel::setUpdateMessage,
-                            onClearTraffic = viewModel::clearTraffic,
-                        )
+                            Destination.SETTINGS -> SettingsScreen(
+                                state = state,
+                                onSettingsChange = viewModel::updateSettings,
+                                onCheckUpdate = viewModel::checkUpdate,
+                                onDownloadUpdate = viewModel::downloadUpdate,
+                                onUpdateMessage = viewModel::setUpdateMessage,
+                            )
+                        }
                     }
                 }
             }
@@ -135,26 +167,34 @@ fun NetDisApp(viewModel: AppViewModel = viewModel()) {
         val liveNode = selectedNode?.let { picked ->
             state.snapshot?.graph?.nodes?.firstOrNull { it.id == picked.id } ?: picked
         }
-        liveNode?.let { node ->
-            NodeDetailSheet(
-                node = node,
-                snapshot = state.snapshot,
-                onDismiss = { selectedNode = null },
-                onAddRouter = { host ->
-                    selectedNode = null
-                    initialRouterHost = host
-                    tabName = Destination.ROUTERS.name
-                },
-                onRescan = {
-                    selectedNode = null
-                    tabName = Destination.TOPOLOGY.name
-                    viewModel.startScan()
-                },
-                onSaveNote = viewModel::saveDeviceNote,
-                onDeleteNote = viewModel::deleteDeviceNote,
-                routerLogin = node.router?.id?.let(state.routerLogins::get),
-                onLoginRouter = { viewModel.loginRouter(it.id) },
-            )
+        if (editingRouter == null) {
+            liveNode?.let { node ->
+                val credentialTarget = when (node.kind) {
+                    NodeKind.ROUTER -> routerCredentialTarget(node)
+                    NodeKind.DEVICE -> deviceCredentialTarget(node, state.snapshot)
+                    NodeKind.INTERNET -> null
+                }
+                NodeDetailSheet(
+                    node = node,
+                    snapshot = state.snapshot,
+                    onDismiss = { selectedNode = null },
+                    credentialTarget = credentialTarget,
+                    onEditCredentials = ::openCredentials,
+                    onRescan = {
+                        selectedNode = null
+                        tabName = Destination.TOPOLOGY.name
+                        viewModel.startScan()
+                    },
+                    onSaveNote = viewModel::saveDeviceNote,
+                    onDeleteNote = viewModel::deleteDeviceNote,
+                    routerLogin = node.router?.id?.let(state.routerLogins::get),
+                    onLoginRouter = { viewModel.loginRouter(it.id) },
+                    portScan = state.portScan,
+                    onStartPortScan = viewModel::startPortScan,
+                    onCancelPortScan = viewModel::cancelPortScan,
+                    onDismissPortScan = viewModel::dismissPortScan,
+                )
+            }
         }
     }
 }
