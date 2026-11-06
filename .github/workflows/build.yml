@@ -85,9 +85,9 @@ jobs:
 
       - name: Stamp the artifact
         id: version
-        # Read the stamp out of the built APK instead of recomputing it: the
-        # packaging step already bumped `app/count.pack`, so a separately
-        # computed version would disagree with what actually shipped.
+        # Read the stamp out of the built APK instead of recomputing it so the
+        # release metadata always matches what was signed. CI does not bump the
+        # local packaging counter, so the pack segment is the committed count.
         run: |
           set -euo pipefail
           apk=app/build/outputs/apk/release/app-release.apk

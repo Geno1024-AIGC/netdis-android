@@ -7,6 +7,11 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+// Count this local packaging build before reading the stamp, so the APK
+// carries its own number and the file stays equal to the number of local
+// packaging builds completed. CI skips the bump and uses the committed value.
+Versioning.bumpOnPackaging(project, projectDir, android = true)
+
 val stamp = Versioning.stamp(rootDir, projectDir)
 
 android {
@@ -118,5 +123,3 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
 }
-
-Versioning.bumpOnPackaging(project, projectDir, android = true)

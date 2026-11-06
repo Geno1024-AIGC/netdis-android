@@ -84,11 +84,11 @@ CI 使用 org 级 secrets `KEYSTORE_BASE64`、`KEYSTORE_STORE_PASSWORD`、`KEYST
 
 - `versionName = 0.1.<env>.<pack>.<sha8>`
   - `env`：CI 为 GitHub run number，本地为提交数量，决定发布顺序
-  - `pack`：本仓库的打包计数（`app/count.pack`），每次打包自增
+  - `pack`：本地打包次数（`app/count.pack`，纳入 Git 管理）。每次本地打包先自增再写进版本号，所以 APK 里的数字就是这次构建的序号，文件的值等于已完成的本地打包次数；CI 不修改它，发布版沿用最后一次提交的计数
   - `sha8`：提交短哈希
 - `versionCode = env`，应用内更新器用它判断是否有新构建
 
-CI 直接从构建出的 APK 里读取版本号，而不是重新计算，因此 `pack` 自增不会让发布标题与 APK 实际版本不一致。
+CI 直接从构建出的 APK 里读取版本号，而不是重新计算，确保发布标题、资产名与 APK 实际版本一致。CI 不参与本地打包计数，因此发布版里的 `pack` 就是构建该提交时本地已完成的打包次数。本地打包后应把 `app/count.pack` 的变化一并提交，避免计数与历史脱节。
 
 ## 隐私与安全
 

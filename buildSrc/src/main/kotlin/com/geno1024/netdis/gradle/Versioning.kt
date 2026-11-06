@@ -9,8 +9,9 @@ import java.io.File
  *
  * - `env` orders published builds. On CI it is the GitHub run number, locally
  *   it falls back to the commit count.
- * - `pack` counts packaging events in this checkout, so two local builds of the
- *   same commit remain distinguishable.
+ * - `pack` counts local packaging builds in this checkout. CI reuses the
+ *   committed number instead of incrementing, so the value in a published APK
+ *   is the number of local packaging builds completed when it was committed.
  * - `sha1` ties the APK back to its source revision.
  */
 data class Stamp(
@@ -64,12 +65,14 @@ object Versioning {
      * Increments `<module>/count.pack` when this session requests packaging of
      * the module.
      *
-     * The bump is a side effect of a packaging event, so the value stamped into
-     * the current build is the count of *previously* completed events. CI reads
-     * the stamp back out of the built APK rather than recomputing it, which
-     * keeps the published version and the artifact in agreement.
+     * Call this before reading the stamp: the build being packaged then carries
+     * its own one-based number, and the file always equals the number of local
+     * packaging builds completed so far. CI deliberately does not touch the
+     * counter: it publishes the number committed by the last local build
+     * instead of inventing a value that would never be written back.
      */
     fun bumpOnPackaging(project: Project, moduleDir: File, android: Boolean) {
+        if (System.getenv("GITHUB_RUN_NUMBER") != null) return
         val names = if (android) ANDROID_PACKAGING else ANDROID_PACKAGING
         val requested = project.gradle.startParameter.taskNames.map { it.substringAfterLast(':') }
         if (requested.any { names.contains(it) || AGGREGATE.contains(it) }) {
