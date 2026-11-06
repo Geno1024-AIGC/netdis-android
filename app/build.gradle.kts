@@ -1,3 +1,4 @@
+import com.geno1024.netdis.gradle.Versioning
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
 
@@ -6,13 +7,7 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
-val buildRun: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
-    ?: (findProperty("canaryRunNumber") as String?)?.toIntOrNull()
-    ?: 1
-val buildCommit: String = System.getenv("GITHUB_SHA")
-    ?: (findProperty("canaryCommit") as String?)
-    ?: "local"
-val buildVersionName = "0.1.$buildRun.${buildCommit.take(8)}"
+val stamp = Versioning.stamp(rootDir, projectDir)
 
 android {
     namespace = "com.geno1024.netdis"
@@ -22,8 +17,8 @@ android {
         applicationId = "com.geno1024.netdis"
         minSdk = 26
         targetSdk = 37
-        versionCode = buildRun
-        versionName = buildVersionName
+        versionCode = stamp.versionCode
+        versionName = stamp.versionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -104,12 +99,6 @@ kotlin {
     }
 }
 
-tasks.register("printVersionName") {
-    doLast {
-        println(buildVersionName)
-    }
-}
-
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -129,3 +118,5 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
 }
+
+Versioning.bumpOnPackaging(project, projectDir, android = true)

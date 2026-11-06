@@ -76,7 +76,15 @@ CI 使用 org 级 secrets `KEYSTORE_BASE64`、`KEYSTORE_STORE_PASSWORD`、`KEYST
 
 首次安装需要从发布页手动下载 APK。之后可以在「设置 → 更新」中检查并安装新版本；如果系统尚未允许本应用安装未知来源应用，应用会先跳转到授权页。
 
-版本号规则：`versionName = 0.1.<GitHub run number>.<commit sha 前 8 位>`，`versionCode = GitHub run number`。
+版本号沿用同组织 Android 项目的三段式构建标记：
+
+- `versionName = 0.1.<env>.<pack>.<sha8>`
+  - `env`：CI 为 GitHub run number，本地为提交数量，决定发布顺序
+  - `pack`：本仓库的打包计数（`app/count.pack`），每次打包自增
+  - `sha8`：提交短哈希
+- `versionCode = env`，应用内更新器用它判断是否有新构建
+
+CI 直接从构建出的 APK 里读取版本号，而不是重新计算，因此 `pack` 自增不会让发布标题与 APK 实际版本不一致。
 
 ## 隐私与安全
 

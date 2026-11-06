@@ -4,11 +4,11 @@ plugins {
 }
 
 /**
- * The value that CI also publishes in `canary.properties` and that the in-app
- * updater compares against the installed versionCode.
+ * The same stamp the APK is built with, printed for local inspection. CI reads
+ * the version back out of the built APK instead, because packaging bumps the
+ * pack counter.
  */
 tasks.register("printVersionName") {
-    val run = providers.environmentVariable("GITHUB_RUN_NUMBER").orElse("1").get()
-    val sha = providers.environmentVariable("GITHUB_SHA").orElse("local").get().take(8)
-    doLast { println("0.1.$run.$sha") }
+    val stamp = com.geno1024.netdis.gradle.Versioning.stamp(rootDir, file("app"))
+    doLast { println(stamp.versionName) }
 }
