@@ -78,7 +78,7 @@ CI 使用 org 级 secrets `KEYSTORE_BASE64`、`KEYSTORE_STORE_PASSWORD`、`KEYST
 
 `canary.properties` 包含构建号、版本名、文件大小与 SHA-256。应用内的更新器直接读取该清单，下载时逐字节校验大小和摘要；最终安装仍由 Android 校验应用签名，因此他人无法用不同密钥的 APK 替换已安装版本。
 
-首次安装需要从发布页手动下载 APK。之后可以在「设置 → 更新」中检查并安装新版本；如果系统尚未允许本应用安装未知来源应用，应用会先跳转到授权页。
+首次安装需要从发布页手动下载 APK。之后可以在「设置 → 更新」中检查并安装新版本；如果系统尚未允许本应用安装未知来源应用，应用会先跳转到授权页。应用包名是 `com.geno1024.ai.netdis`；包名变更后（例如从旧包名升级）需要手动安装一次，无法由应用内更新覆盖。
 
 版本号沿用同组织 Android 项目的三段式构建标记：
 
@@ -108,7 +108,7 @@ CI 直接从构建出的 APK 里读取版本号，而不是重新计算，确保
 ## 代码结构
 
 ```
-app/src/main/kotlin/com/geno1024/netdis/
+app/src/main/kotlin/com/geno1024/ai/netdis/
 ├── model/      共享数据模型
 ├── net/        地址、ARP、DNS、mDNS、SSDP、NetBIOS、端口探测与扫描编排
 ├── router/     OpenWrt / MikroTik 适配器与自动识别

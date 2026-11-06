@@ -10,7 +10,7 @@ plugins {
  */
 tasks.register("printVersionName") {
     doLast {
-        val stamp = com.geno1024.netdis.gradle.Versioning.stamp(rootDir, file("app"))
+        val stamp = com.geno1024.ai.netdis.gradle.Versioning.stamp(rootDir, file("app"))
         println(stamp.versionName)
     }
 }

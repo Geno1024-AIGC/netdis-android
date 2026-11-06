@@ -1,4 +1,4 @@
-import com.geno1024.netdis.gradle.Versioning
+import com.geno1024.ai.netdis.gradle.Versioning
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
 
@@ -15,11 +15,11 @@ Versioning.bumpOnPackaging(project, projectDir, android = true)
 val stamp = Versioning.stamp(rootDir, projectDir)
 
 android {
-    namespace = "com.geno1024.netdis"
+    namespace = "com.geno1024.ai.netdis"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.geno1024.netdis"
+        applicationId = "com.geno1024.ai.netdis"
         minSdk = 26
         targetSdk = 37
         versionCode = stamp.versionCode
