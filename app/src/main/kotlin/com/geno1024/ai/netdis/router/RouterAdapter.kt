@@ -91,6 +91,7 @@ object RouterParsing {
                 },
                 online = existing.online || host.online,
                 sources = existing.sources + host.sources,
+                routerId = existing.routerId ?: host.routerId,
                 extra = existing.extra + host.extra,
             )
         }

@@ -8,9 +8,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Runs the right adapter for one configured router. AUTO tries OpenWrt first
- * (ubus answers only when it exists) and then RouterOS, so one credential entry
- * survives a router replacement.
+ * Runs the right adapter for one configured router. The adapter list lives in
+ * [RouterAdapters], so AUTO probes every registered firmware and a new brand is
+ * one entry there; the login-page fingerprint only reorders the attempts.
  */
 object RouterScanner {
 
@@ -30,17 +30,11 @@ object RouterScanner {
             val outcomes = ArrayList<RouterScanOutcome>()
 
             if (hasCredentials) {
-                when (normalized.type) {
-                    RouterType.OPENWRT -> outcomes += OpenWrtAdapter.scan(normalized, timeoutMs)
-                    RouterType.MIKROTIK -> outcomes += MikroTikAdapter.scan(normalized, timeoutMs)
-                    RouterType.AUTO -> {
-                        outcomes += OpenWrtAdapter.scan(normalized, timeoutMs)
-                        if (outcomes.none { it.success }) {
-                            outcomes += MikroTikAdapter.scan(normalized, timeoutMs)
-                        }
-                    }
-
-                    RouterType.UNKNOWN -> Unit
+                val adapters = RouterAdapters.candidates(normalized.type, fingerprint.brand)
+                for (adapter in adapters) {
+                    val outcome = adapter.scan(normalized, timeoutMs)
+                    outcomes += outcome
+                    if (outcome.success) break
                 }
             }
 
@@ -55,17 +49,21 @@ object RouterScanner {
                 )
             }
 
-            val failure = outcomes.firstOrNull()
+            val failureSummary = outcomes
+                .mapNotNull { it.message.takeIf(String::isNotBlank) }
+                .distinct()
+                .joinToString("；")
+                .take(240)
             val summary = fingerprint.summary
             val message = when {
                 !hasCredentials && fingerprint.reachable ->
                     "已识别 ${summary ?: "路由器"}，未填写登录凭据"
 
                 !hasCredentials -> fingerprint.message ?: "未填写登录凭据"
-                fingerprint.reachable && failure != null ->
-                    "${failure.message}（已识别 ${summary ?: "路由器"}）"
+                fingerprint.reachable && failureSummary.isNotEmpty() ->
+                    "$failureSummary（已识别 ${summary ?: "路由器"}）"
 
-                failure != null -> failure.message
+                failureSummary.isNotEmpty() -> failureSummary
                 fingerprint.reachable -> "路由器在线，但 ${normalized.type.label} 接口不可用"
                 else -> fingerprint.message ?: "无法连接路由器"
             }
