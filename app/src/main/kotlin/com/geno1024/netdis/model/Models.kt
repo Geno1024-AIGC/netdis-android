@@ -165,6 +165,8 @@ data class AppSettings(
     val probeTimeoutMs: Int = 320,
     val showOffline: Boolean = true,
     val updateMirrorPrefix: String = "",
+    /** Modern Android blocks the neighbour table; a rooted phone can still read it. */
+    val readArpWithRoot: Boolean = false,
 )
 
 enum class ScanStage(val label: String) {

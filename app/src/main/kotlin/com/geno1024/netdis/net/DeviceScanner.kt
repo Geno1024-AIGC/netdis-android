@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -26,8 +27,12 @@ import java.io.File
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.coroutineContext
+
+/** `/proc/self/net/arp` is the same table; try both spellings some builds expose. */
+private val ARP_PATHS = listOf("/proc/net/arp", "/proc/self/net/arp")
 
 /**
  * Orchestrates one scan. The stages are intentionally independent: direct
@@ -95,15 +100,17 @@ class DeviceScanner(private val context: Context) {
         val addresses = cidr.hosts(4096)
             .map(Subnet::formatIp)
             .filter { it != local.localIp }
+        val addressSet = addresses.toHashSet()
         report(ScanStage.WAKE, 0.06f, "唤醒 ${addresses.size} 个地址")
         wakeHosts(addresses)
+        // ARP resolution runs asynchronously after the wake datagrams. Give the
+        // kernel a moment so the first read already has usable entries instead
+        // of a table full of INCOMPLETE rows.
+        delay(350)
 
         coroutineContext.ensureActive()
 
-        val arp = readArp()
-        if (arp.isEmpty()) {
-            warnings += "无法读取本机 ARP 表，MAC 与厂商信息可能缺失"
-        }
+        val arp = readArp(settings.readArpWithRoot)
 
         report(ScanStage.PROBE, 0.12f, "端口探测")
         val ports = if (settings.deepScan) TcpProbe.QUICK_PORTS + TcpProbe.DEEP_PORTS
@@ -131,7 +138,7 @@ class DeviceScanner(private val context: Context) {
         val completed = AtomicInteger(0)
         addresses.parallelMap(48) { ip ->
             coroutineContext.ensureActive()
-            val mac = arp[ip]
+            val mac = arp.macs[ip]
             val open = TcpProbe.probeHost(
                 ip = ip,
                 ports = ports,
@@ -172,6 +179,31 @@ class DeviceScanner(private val context: Context) {
         }
 
         coroutineContext.ensureActive()
+
+        // The TCP sweep forces the kernel to resolve neighbours for every
+        // address that answered. Read the table a second time so MACs that
+        // appeared during probing are not lost, and add hosts that only the
+        // neighbour table knows about.
+        val arpAfter = readArp(settings.readArpWithRoot)
+        for ((ip, mac) in arpAfter.macs) {
+            if (ip !in addressSet) continue
+            val existing = live[ip]
+            if (existing == null) {
+                merge(
+                    HostRecord(
+                        ip = ip,
+                        mac = mac,
+                        online = true,
+                        sources = setOf(HostSource.ARP),
+                    ),
+                )
+            } else if (existing.mac != mac) {
+                merge(existing.copy(mac = mac, sources = existing.sources + HostSource.ARP))
+            }
+        }
+        if (arp.macs.isEmpty() && arpAfter.macs.isEmpty()) {
+            warnings += arpWarning(arp.denied, settings.readArpWithRoot)
+        }
 
         report(ScanStage.SERVICES, 0.56f, "收集 mDNS / SSDP")
         val mdns = mdnsDeferred.await()
@@ -263,17 +295,6 @@ class DeviceScanner(private val context: Context) {
             ),
         )
 
-        for (host in live.values) {
-            val vendor = Oui.vendorFor(host.mac)
-            val withVendor = if (vendor != null && host.vendor == null) {
-                host.copy(vendor = vendor)
-            } else {
-                host
-            }
-            val classified = withVendor.copy(kind = DeviceClassifier.classify(withVendor))
-            live[host.ip] = classified
-        }
-
         coroutineContext.ensureActive()
 
         report(ScanStage.ROUTERS, 0.82f, "读取路由器")
@@ -328,6 +349,20 @@ class DeviceScanner(private val context: Context) {
             }
         }
 
+        // Vendor lookup and classification run after the router merge as well,
+        // so clients that only the router knows (the normal case when Android
+        // blocks the local ARP table) still get a vendor and a device kind.
+        for (host in live.values.toList()) {
+            val vendor = Oui.vendorFor(host.mac)
+            val withVendor = if (vendor != null && host.vendor == null) {
+                host.copy(vendor = vendor)
+            } else {
+                host
+            }
+            val classified = withVendor.copy(kind = DeviceClassifier.classify(withVendor))
+            live[host.ip] = classified
+        }
+
         coroutineContext.ensureActive()
 
         report(ScanStage.TOPOLOGY, 0.94f, "生成拓扑")
@@ -379,11 +414,68 @@ class DeviceScanner(private val context: Context) {
         }
     }
 
-    private fun readArp(): Map<String, String> {
-        val entries = runCatching {
-            ArpTable.parse(File("/proc/net/arp").readText())
-        }.getOrDefault(emptyList())
-        return entries.filter { it.complete }.associate { it.ip to it.mac }
+    private data class ArpSnapshot(
+        val macs: Map<String, String> = emptyMap(),
+        val denied: Boolean = false,
+    )
+
+    /**
+     * Android 10 blocks `/proc/net/arp` for apps and Android 12+ additionally
+     * blocks the netlink neighbour dump, so this normally fails with EACCES.
+     * There is no runtime permission that lifts it; a networked router (which
+     * the scan reads anyway) or root is the way to get MACs on modern devices.
+     */
+    private fun readArp(withRoot: Boolean): ArpSnapshot {
+        val macs = LinkedHashMap<String, String>()
+        var denied = false
+        for (path in ARP_PATHS) {
+            val text = runCatching { File(path).readText() }.getOrElse { error ->
+                if (error.isPermissionDenied()) denied = true
+                null
+            } ?: continue
+            collectArpEntries(text, macs)
+        }
+        if (macs.isEmpty() && denied && withRoot) {
+            readArpAsRoot()?.let { collectArpEntries(it, macs) }
+        }
+        return ArpSnapshot(macs, denied)
+    }
+
+    private fun collectArpEntries(text: String, into: MutableMap<String, String>) {
+        for (entry in ArpTable.parse(text)) {
+            if (entry.complete) into[entry.ip] = entry.mac
+        }
+    }
+
+    private fun Throwable.isPermissionDenied(): Boolean =
+        this is SecurityException ||
+            message?.contains("EACCES") == true ||
+            message?.contains("Permission denied", ignoreCase = true) == true
+
+    /**
+     * `su -c` runs in the root domain, where the neighbour table is readable.
+     * The timeout matters because the first call may wait for the user to
+     * approve the request and must not hang the scan.
+     */
+    private fun readArpAsRoot(): String? = runCatching {
+        val process = ProcessBuilder("su", "-c", "cat /proc/net/arp")
+            .redirectErrorStream(true)
+            .start()
+        if (!process.waitFor(8, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            return null
+        }
+        if (process.exitValue() != 0) return null
+        process.inputStream.bufferedReader().use { it.readText() }
+    }.getOrNull()
+
+    private fun arpWarning(denied: Boolean, rootEnabled: Boolean): String = when {
+        denied && rootEnabled ->
+            "读取本机 ARP 表被拒绝（root 授权可能未生效），MAC 与厂商信息将由路由器数据补全"
+        denied ->
+            "Android 10+ 禁止应用读取本机 ARP 表；可登录路由器读取，或在设置中开启 root 读取"
+        else ->
+            "本机 ARP 表为空，MAC 与厂商信息可能缺失；登录路由器可补全"
     }
 
     private fun cleanHostname(raw: String): String? {

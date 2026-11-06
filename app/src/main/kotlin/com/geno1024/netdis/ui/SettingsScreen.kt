@@ -149,6 +149,12 @@ fun SettingsScreen(
                 checked = settings.showOffline,
                 onCheckedChange = { value -> onSettingsChange { it.copy(showOffline = value) } },
             )
+            SwitchRow(
+                title = "Root 读取 ARP 表",
+                description = "Android 10+ 默认禁止读取本机 ARP 表；已 root 并授权后可用 su 读取本网段 MAC",
+                checked = settings.readArpWithRoot,
+                onCheckedChange = { value -> onSettingsChange { it.copy(readArpWithRoot = value) } },
+            )
             Spacer(Modifier.size(10.dp))
             TimeoutSlider(
                 value = settings.probeTimeoutMs,

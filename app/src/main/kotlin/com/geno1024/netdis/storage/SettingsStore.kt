@@ -20,6 +20,7 @@ class SettingsStore(context: Context) {
                 .coerceIn(120, 1500),
             showOffline = prefs.getBoolean(KEY_OFFLINE, defaults.showOffline),
             updateMirrorPrefix = prefs.getString(KEY_MIRROR, null).orEmpty(),
+            readArpWithRoot = prefs.getBoolean(KEY_ROOT_ARP, defaults.readArpWithRoot),
         )
     }
 
@@ -31,6 +32,7 @@ class SettingsStore(context: Context) {
             .putInt(KEY_TIMEOUT, settings.probeTimeoutMs.coerceIn(120, 1500))
             .putBoolean(KEY_OFFLINE, settings.showOffline)
             .putString(KEY_MIRROR, settings.updateMirrorPrefix.trim())
+            .putBoolean(KEY_ROOT_ARP, settings.readArpWithRoot)
             .apply()
     }
 
@@ -42,5 +44,6 @@ class SettingsStore(context: Context) {
         const val KEY_TIMEOUT = "probeTimeoutMs"
         const val KEY_OFFLINE = "showOffline"
         const val KEY_MIRROR = "updateMirrorPrefix"
+        const val KEY_ROOT_ARP = "readArpWithRoot"
     }
 }
