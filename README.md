@@ -4,7 +4,7 @@
 
 - **设备发现**：ARP 表、TCP 端口探测、mDNS、SSDP/UPnP、DNS 反查、NetBIOS、路由器 DHCP 租约
 - **多级路由**：根据 WAN 地址与上级网关把二级、三级路由自动挂到正确的位置
-- **路由器登录**：OpenWrt / LuCI（ubus JSON-RPC）、MikroTik RouterOS 7（REST）与中兴 ZTE 网页管理页；应用内点按卡片即可登录并刷新
+- **路由器登录**：OpenWrt / LuCI（ubus JSON-RPC）、MikroTik RouterOS 7（REST），以及中兴、TP-Link、水星、华硕、小米、华为、腾达、爱快、锐捷、H3C、Netgear、D-Link 等网页管理页；应用内点按卡片即可登录并刷新
 - **设备备注**：给未知设备起名、写备注，按 MAC 跟随设备，重新扫描后仍然生效
 - **抓包排障**：按需记录应用与路由器之间的 HTTP 请求/响应，可查看、导出，便于适配新固件
 - **离线缓存**：保留上次扫描结果与设备清单，重新打开应用即可查看
@@ -34,7 +34,9 @@
 
 路由器编辑页的芯片、自动识别探测顺序和应用内登录都会自动包含新适配器。`AUTO` 会依次尝试所有适配器，登录页指纹（`RouterFingerprintProbe.detectBrand`）只用于把更可能的品牌排到前面，猜错只会多几次请求，不会导致登录失败。
 
-中兴适配器（`router/ZteAdapter.kt`）走常见的 `/asp/GetRandCount.asp` 取随机数、base64 表单提交 `/login.gch`、携带会话 Cookie 读取客户端/状态页的流程。由于 ZTE 各型号与固件的页面名和表格列并不统一，客户端解析刻意采用「行内任意位置找 IPv4 与 MAC」而不是固定列号；页面结构差异可以用抓包定位。
+网页管理类品牌共用一个引擎（`router/WebUiAdapter.kt`）和解析层（`router/WebUiParsing.kt`）：适配器只描述登录页、登录请求与客户端/状态页，引擎负责 Cookie、令牌、表单/JSON 提交和失败判断。解析层同时接受 HTML 表格、直接返回的 JSON，以及脚本里内嵌的 JSON（例如 `var devicelist = {...}`），不依赖固定列号，因此固件换皮后通常仍能读到客户端。品牌清单在 `router/WebUiAdapters.kt`。
+
+中兴适配器（`router/ZteAdapter.kt`）单独保留，因为它需要 `/asp/GetRandCount.asp` 随机数 + base64 `/login.gch` 的特殊流程；其他网页品牌由 `WebUiAdapters.kt` 中的小型描述接入。
 
 ## 抓包
 
@@ -127,8 +129,9 @@ CI 直接从构建出的 APK 里读取版本号，而不是重新计算，确保
 
 - MikroTik 需要 RouterOS 7 并启用 `www` / `www-ssl` REST 服务。
 - OpenWrt 需要可访问的 `ubus` 端点与 LuCI 账号；部分裁剪固件可能未安装 `luci-rpc`。
-- 中兴各型号 / 固件的网页与表格结构差异较大；适配器已覆盖常见登录流程与「行内找 IP/MAC」的表格解析，个别固件可能只能登录、读不到客户端，可用「设置 → 抓包」定位后调整。
-- 其他品牌路由器目前只做指纹识别，不能读取客户端列表；但仍会作为网关显示在拓扑中。新增品牌按「路由器适配与扩展」接入。
+- 网页管理类品牌（中兴、TP-Link、水星、华硕、小米、华为、腾达、爱快、锐捷、H3C、Netgear、D-Link）的固件差异很大；适配器已覆盖常见登录流程、HTML 表格与 JSON/内嵌 JSON 客户端列表，但个别固件可能只能登录、读不到客户端，可用「设置 → 抓包」定位后调整。
+- 部分新固件要求密码预哈希、图形验证码或多步令牌交换；适配器会尝试常见方案，失败原因会显示在路由器卡片上。抓包可以看到具体是哪一步被拒绝。
+- 未单独适配的品牌仍会通过登录页指纹显示品牌并作为网关出现在拓扑中；新增品牌按「路由器适配与扩展」接入。
 - 蜂窝网络下运营商通常隔离局域网，扫描结果可能为空。
 - 拓扑布局针对家庭网络规模优化，超大网段会限制扫描地址数量。
 - 无锁屏密码本身不影响凭据加密；但如果 Keystore 报 `-74 ATTESTATION_KEYS_NOT_PROVISIONED`（常见于 root 或定制 ROM），硬件密钥无法生成，此时密码由软件密钥加密。
@@ -139,7 +142,7 @@ CI 直接从构建出的 APK 里读取版本号，而不是重新计算，确保
 app/src/main/kotlin/com/geno1024/ai/netdis/
 ├── model/      共享数据模型
 ├── net/        地址、ARP、DNS、mDNS、SSDP、NetBIOS、端口探测与扫描编排
-├── router/     适配器注册表、OpenWrt / MikroTik / ZTE 适配器、HTTP 会话与抓包
+├── router/     适配器注册表、OpenWrt / MikroTik / ZTE / 网页品牌适配器、HTTP 会话与抓包
 ├── topo/       拓扑构建与布局
 ├── storage/    Keystore 加密、设置、设备备注、路由器与快照持久化
 ├── update/     canary 清单、镜像、下载校验与安装 Intent

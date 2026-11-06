@@ -13,7 +13,22 @@ enum class LinkKind { ETHERNET, WIFI, UNKNOWN }
 
 /** Which router web API a configuration should use. AUTO tries each adapter. */
 enum class RouterType {
-    AUTO, OPENWRT, MIKROTIK, ZTE, UNKNOWN;
+    AUTO,
+    OPENWRT,
+    MIKROTIK,
+    ZTE,
+    TP_LINK,
+    MERCURY,
+    ASUS,
+    XIAOMI,
+    HUAWEI,
+    TENDA,
+    IKUAI,
+    RUIJIE,
+    H3C,
+    NETGEAR,
+    D_LINK,
+    UNKNOWN;
 
     val label: String
         get() = when (this) {
@@ -21,6 +36,17 @@ enum class RouterType {
             OPENWRT -> "OpenWrt / LuCI"
             MIKROTIK -> "MikroTik RouterOS"
             ZTE -> "中兴 ZTE"
+            TP_LINK -> "TP-Link"
+            MERCURY -> "水星 Mercury"
+            ASUS -> "华硕 ASUS"
+            XIAOMI -> "小米 MiWiFi"
+            HUAWEI -> "华为 Huawei"
+            TENDA -> "腾达 Tenda"
+            IKUAI -> "爱快 iKuai"
+            RUIJIE -> "锐捷 Ruijie"
+            H3C -> "H3C"
+            NETGEAR -> "Netgear"
+            D_LINK -> "D-Link"
             UNKNOWN -> "仅指纹"
         }
 }
