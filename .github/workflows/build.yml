@@ -19,6 +19,10 @@ jobs:
 
     outputs:
       version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
+      head_sha: ${{ steps.version.outputs.head_sha }}
+      file_name: ${{ steps.version.outputs.file_name }}
 
     steps:
       - uses: actions/checkout@v7
