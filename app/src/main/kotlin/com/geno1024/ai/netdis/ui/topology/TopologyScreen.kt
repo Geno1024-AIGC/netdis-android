@@ -251,7 +251,11 @@ private fun Divider() {
 @Composable
 private fun Stat(value: String, label: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, style = MaterialTheme.typography.titleLarge)
+        Text(
+            value,
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
@@ -269,6 +273,7 @@ private fun ScanStatusCard(state: com.geno1024.ai.netdis.ui.AppUiState) {
                 Text(
                     state.progress.stage.label,
                     style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
                     state.progress.detail.ifBlank { "正在读取局域网" },
