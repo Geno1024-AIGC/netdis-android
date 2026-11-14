@@ -8,9 +8,9 @@ plugins {
 }
 
 // Count this local packaging build before reading the stamp, so the APK
-// carries its own number and the file stays equal to the number of local
-// packaging builds completed. CI skips the bump and uses the committed value.
-Versioning.bumpOnPackaging(project, projectDir, android = true)
+// carries its own number and the file stays equal to the number of packaging
+// builds that have happened — attempts included, failures included.
+Versioning.bumpOnPackaging(project, projectDir)
 
 val stamp = Versioning.stamp(rootDir, projectDir)
 
