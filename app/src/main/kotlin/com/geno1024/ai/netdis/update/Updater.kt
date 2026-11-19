@@ -108,6 +108,7 @@ object Updater {
             ?.filter { it.name != "netdis-${info.runNumber}.apk" }
             ?.forEach { it.delete() }
         val target = File(dir, "netdis-${info.runNumber}.apk")
+        val partial = File(dir, target.name + ".part")
         val url = mirror.wrap(CanaryManifest.apkUrl(info.assetName))
         try {
             val connection = open(url)
@@ -118,7 +119,7 @@ object Updater {
             val total = contentLength(connection, expected)
             var received = 0L
             connection.inputStream.use { input ->
-                target.outputStream().use { output ->
+                partial.outputStream().use { output ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         val read = input.read(buffer)
@@ -130,17 +131,24 @@ object Updater {
                 }
             }
             if (expected > 0 && received != expected) {
-                target.delete()
+                partial.delete()
                 return@withContext DownloadResult.Failed("文件不完整（$received/$expected 字节）")
             }
-            val actual = sha256(target)
+            val actual = sha256(partial)
             if (actual != info.sha256) {
-                target.delete()
+                partial.delete()
                 return@withContext DownloadResult.Failed("校验失败，镜像可能已被篡改")
+            }
+            // Only a validated file becomes the finished APK; an interrupted
+            // download never leaves a `.part` that the installer could open.
+            if (target.exists()) target.delete()
+            if (!partial.renameTo(target)) {
+                partial.delete()
+                return@withContext DownloadResult.Failed("无法保存安装包")
             }
             DownloadResult.Success(target)
         } catch (e: IOException) {
-            target.delete()
+            partial.delete()
             DownloadResult.Failed(e.message ?: "下载失败")
         }
     }
